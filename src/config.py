@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 from src.services.ai_request_compat import apply_thinking_mode
+from src.infrastructure.external.ai_client import _sanitize_no_proxy_env
 
 # --- AI & Notification Configuration ---
 load_dotenv()
@@ -66,6 +67,8 @@ if not all([BASE_URL, MODEL_NAME]):
     client = None
 else:
     try:
+        # 旧客户端和 AIClient 必须在创建前共用同一套 NO_PROXY 清理。
+        _sanitize_no_proxy_env()
         if PROXY_URL:
             print(f"正在为AI请求使用HTTP/S代理: {PROXY_URL}")
             # httpx 会自动从环境变量中读取代理设置

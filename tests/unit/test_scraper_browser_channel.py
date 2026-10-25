@@ -27,6 +27,18 @@ def test_resolve_browser_channel_uses_msedge_locally_when_requested(monkeypatch)
     assert scraper._resolve_browser_channel() == "msedge"
 
 
+def test_chromium_launch_args_disable_crashpad_and_pin_dump_dir():
+    from src.scraper import build_chromium_launch_args
+
+    args = build_chromium_launch_args("/tmp/chromium-crashpad")
+
+    assert "--disable-breakpad" in args
+    assert "--disable-crash-reporter" in args
+    assert "--crash-dumps-dir=/tmp/chromium-crashpad" in args
+    feature_flags = [arg for arg in args if arg.startswith("--disable-features=")]
+    assert feature_flags == ["--disable-features=IsolateOrigins,site-per-process,Crashpad"]
+
+
 def test_build_extra_headers_drops_document_navigation_headers():
     from src.scraper import _build_extra_headers
 
@@ -47,7 +59,6 @@ def test_build_extra_headers_drops_document_navigation_headers():
     )
 
     assert headers == {
-        "User-Agent": "Mozilla/5.0",
         "Accept-Language": "zh-CN",
         "sec-ch-ua": '"Chromium"',
     }

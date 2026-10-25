@@ -2,6 +2,8 @@ import asyncio
 import json
 import os
 import random
+import re
+import tempfile
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlencode
@@ -123,6 +125,42 @@ def _should_analyze_images(task_config: dict) -> bool:
     if isinstance(raw_value, bool):
         return raw_value
     return str(raw_value).strip().lower() not in {"false", "0", "no", "off"}
+
+
+# 搜索页区域弹窗的 class 带 CSS Module hash，线上同时存在多套 hash。
+# 只匹配前缀，避免写死 provItem--QAdOx8nD / searchBtn--Ic6RKcAb 后失效。
+REGION_AREA_WRAP_SELECTOR = "[class*='areaWrap']:visible"
+REGION_COLUMN_SELECTOR = ":scope > div"
+REGION_OPTION_SELECTOR = "[class*='provItem']:visible"
+REGION_SUBMIT_SELECTOR = "[class*='searchBtn']:visible"
+REGION_SUBMIT_TEXT = re.compile(r"查看(?:\d+|999\+)件宝贝")
+CHROMIUM_CRASH_DUMPS_DIRNAME = "chromium-crashpad"
+
+
+def build_chromium_launch_args(crash_dumps_dir: str) -> list[str]:
+    """Chromium 启动参数。
+
+    Docker 里的 Playwright Chromium 会拉起 chrome_crashpad_handler。数据库路径一旦落到
+    ``/``，handler 会自监控重启并占住大量内存。这里禁用 crash reporter，同时把 dump
+    目录固定到可写临时目录。
+    """
+    return [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-web-security",
+        "--disable-breakpad",
+        "--disable-crash-reporter",
+        "--disable-features=IsolateOrigins,site-per-process,Crashpad",
+        f"--crash-dumps-dir={crash_dumps_dir}",
+    ]
+
+
+def prepare_chromium_launch_args() -> list[str]:
+    crash_dumps_dir = os.path.join(tempfile.gettempdir(), CHROMIUM_CRASH_DUMPS_DIRNAME)
+    os.makedirs(crash_dumps_dir, exist_ok=True)
+    return build_chromium_launch_args(crash_dumps_dir)
 
 
 def _format_failure_reason(reason: str, limit: int = 500) -> str:
@@ -349,19 +387,27 @@ def _build_context_overrides(snapshot: dict) -> dict:
     return _clean_kwargs(overrides)
 
 
-# 快照里常混入文档导航/探针请求的头。这些头不能套到后续 XHR/搜索接口上，
-# 否则闲鱼可能直接不发 pc.search，表现为 expect_response 超时。
-_EXTRA_HEADER_BLOCKLIST = {
-    "cookie",
-    "content-length",
-    "content-type",
-    "host",
-    "connection",
+# 这些头由浏览器按请求类型生成。扩展快照里常见的是某次 XHR 的值
+# （Sec-Fetch-Dest: empty / Sec-Fetch-Mode: cors / Accept: */*）。
+# 如果原样套到 BrowserContext，文档和脚本请求会被改成 CORS 空请求，搜索页只剩白屏。
+_BROWSER_MANAGED_EXTRA_HEADERS = {
     "accept",
     "accept-encoding",
-    "referer",
+    "authorization",
+    "connection",
+    "content-length",
+    "content-type",
+    "cookie",
+    "host",
     "origin",
+    "proxy-authorization",
+    "referer",
+    "sec-fetch-dest",
+    "sec-fetch-mode",
+    "sec-fetch-site",
+    "sec-fetch-user",
     "upgrade-insecure-requests",
+    "user-agent",
     "cache-control",
     "pragma",
 }
@@ -375,7 +421,7 @@ def _build_extra_headers(raw_headers: Optional[dict]) -> dict:
         if not key or value is None:
             continue
         lowered = key.lower()
-        if lowered in _EXTRA_HEADER_BLOCKLIST or lowered.startswith("sec-fetch-"):
+        if lowered in _BROWSER_MANAGED_EXTRA_HEADERS or lowered.startswith("sec-fetch-"):
             continue
         headers[key] = value
     return headers
@@ -833,15 +879,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
             print(f"警告：读取登录状态文件失败，将直接按路径使用: {e}")
 
         async with async_playwright() as p:
-            # 反检测启动参数
-            launch_args = [
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-web-security",
-                "--disable-features=IsolateOrigins,site-per-process",
-            ]
+            launch_args = prepare_chromium_launch_args()
 
             launch_kwargs = {"headless": RUN_HEADLESS, "args": launch_args}
             if proxy_server:
@@ -1109,10 +1147,10 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
 
                             # 列表容器：第一层 children 即省/市/区三列，不再强依赖具体类名，提升鲁棒性
                             area_wrap = popover.locator(
-                                ".areaWrap--FaZHsn8E, [class*='areaWrap']"
+                                REGION_AREA_WRAP_SELECTOR
                             ).first
                             await area_wrap.wait_for(state="visible", timeout=3000)
-                            columns = area_wrap.locator(":scope > div")
+                            columns = area_wrap.locator(REGION_COLUMN_SELECTOR)
                             col_prov = columns.nth(0)
                             col_city = columns.nth(1)
                             col_dist = columns.nth(2)
@@ -1124,9 +1162,10 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                             async def _click_in_column(
                                 column_locator, text_value: str, desc: str
                             ) -> None:
+                                # 闲鱼 CSS Module 的 hash 会变，不能写死 provItem--XXXX。
                                 option = column_locator.locator(
-                                    ".provItem--QAdOx8nD", has_text=text_value
-                                ).first
+                                    REGION_OPTION_SELECTOR
+                                ).get_by_text(text_value, exact=True).first
                                 if await option.count():
                                     await option.click()
                                     await random_sleep(1.5, 2)
@@ -1159,8 +1198,8 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                 await random_sleep(1, 2)
 
                             search_btn = popover.locator(
-                                "div.searchBtn--Ic6RKcAb"
-                            ).first
+                                REGION_SUBMIT_SELECTOR
+                            ).filter(has_text=REGION_SUBMIT_TEXT).last
                             if await search_btn.count():
                                 try:
                                     async with page.expect_response(

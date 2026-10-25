@@ -6,6 +6,7 @@ from .ntfy_client import NtfyClient
 from .telegram_client import TelegramClient
 from .wecom_bot_client import WeComBotClient
 from .webhook_client import WebhookClient
+from .pushplus_client import PushPlusClient
 
 __all__ = [
     "NotificationClient",
@@ -17,4 +18,5 @@ __all__ = [
     "TelegramClient",
     "WeComBotClient",
     "WebhookClient",
+    "PushPlusClient",
 ]
