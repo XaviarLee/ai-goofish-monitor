@@ -46,6 +46,16 @@ class SellerProfileCache:
             return None
         return self._clone(entry.value)
 
+    def peek(self, user_id: str) -> Optional[dict]:
+        return self._get_entry_value(str(user_id or "").strip())
+
+    def cached_ids(self) -> set[str]:
+        alive: set[str] = set()
+        for user_id in list(self._entries.keys()):
+            if self._get_entry_value(user_id) is not None:
+                alive.add(user_id)
+        return alive
+
     async def get_or_load(self, user_id: str, loader: SellerProfileLoader) -> dict:
         async with self._lock:
             cached_value = self._get_entry_value(user_id)

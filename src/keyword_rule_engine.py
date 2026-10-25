@@ -69,6 +69,29 @@ def _keyword_matches(keyword: str, normalized_text: str) -> bool:
     return re.search(pattern, normalized_text) is not None
 
 
+def item_matches_search_keyword(item: Dict[str, Any] | None, keyword: str) -> bool:
+    """判断搜索结果是否真的命中任务关键词。
+
+    闲鱼搜索常夹带相关推荐（搜 3090 会出现 3080/5070/整机），标题必须命中
+    任务关键词才进入详情和 AI，避免结果页被无关商品淹没。
+    """
+    query = normalize_text(keyword)
+    if not query:
+        return True
+
+    title = normalize_text(str((item or {}).get("商品标题") or ""))
+    if _keyword_matches(query, title):
+        return True
+
+    # 纯数字型号允许常见写法：RTX3090、rtx-3090、3090ti，但不能命中 13090 这种更长数字。
+    compact_query = query.replace(" ", "")
+    if not compact_query.isalnum():
+        return False
+    compact_title = re.sub(r"[^a-z0-9]+", "", title)
+    pattern = rf"(?:^|[^0-9])(?:rtx)?{re.escape(compact_query)}(?:ti)?(?:[^0-9]|$)"
+    return re.search(pattern, compact_title) is not None
+
+
 def evaluate_keyword_rules(keywords: List[str], search_text: str) -> Dict[str, Any]:
     normalized_text = normalize_text(search_text)
     normalized_keywords = _normalize_keywords(keywords)

@@ -45,6 +45,29 @@ async def _report_progress(
         await progress_callback(step_key, message)
 
 
+def _sanitize_generated_criteria(text: str) -> str:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("text"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
+    draft_markers = (
+        "我们需要回答用户",
+        "只输出文本内容，不要额外解释",
+        "只输出新生成的文本内容",
+    )
+    if any(marker in cleaned[:200] for marker in draft_markers):
+        raise RuntimeError(
+            "AI 返回的是生成过程草稿而不是分析标准，请重试任务创建或手动编辑 prompts 文件。"
+        )
+    if "核心分析原则" not in cleaned and "HARD DEAL-BREAKER" not in cleaned:
+        raise RuntimeError(
+            "AI 生成的分析标准格式不完整，请重试任务创建或手动编辑 prompts 文件。"
+        )
+    return cleaned
+
+
 def _read_reference_text(reference_file_path: str) -> str:
     try:
         with open(reference_file_path, "r", encoding="utf-8") as file:
@@ -61,7 +84,7 @@ async def _request_generated_text(ai_client: AIClient, prompt: str) -> str:
         generated_text = await ai_client._call_ai(
             [{"role": "user", "content": prompt}],
             temperature=0.5,
-            max_output_tokens=800,
+            max_output_tokens=4000,
             enable_json_output=False,
         )
     except Exception as exc:
@@ -69,7 +92,7 @@ async def _request_generated_text(ai_client: AIClient, prompt: str) -> str:
         raise
 
     print("AI已成功生成内容。")
-    return generated_text.strip()
+    return _sanitize_generated_criteria(generated_text)
 
 
 async def _close_ai_client(

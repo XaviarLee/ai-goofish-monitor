@@ -72,6 +72,34 @@ def test_get_ai_analysis_returns_parsed_json(monkeypatch, tmp_path):
     assert call_count["value"] == 1
 
 
+def test_get_ai_analysis_accepts_json_missing_prompt_version(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_create(**_kwargs):
+        return SimpleNamespace(
+            output_text=(
+                '{"is_recommended":false,"reason":"信息不完整",'
+                '"risk_tags":[],"criteria_analysis":{"seller_type":{"status":"UNKNOWN"}}}'
+            )
+        )
+
+    monkeypatch.setattr(ai_handler, "client", _build_fake_client(fake_create))
+    monkeypatch.setattr(ai_handler, "MODEL_NAME", "fake-model")
+    monkeypatch.setattr(ai_handler, "ENABLE_RESPONSE_FORMAT", True)
+    monkeypatch.setattr(app_config, "ENABLE_RESPONSE_FORMAT", True)
+
+    result = asyncio.run(
+        ai_handler.get_ai_analysis(
+            {"商品信息": {"商品ID": "4", "商品标题": "测试商品4"}},
+            image_paths=[],
+            prompt_text="请输出 JSON",
+        )
+    )
+
+    assert result["is_recommended"] is False
+    assert result["prompt_version"] == "EagleEye-V6.4"
+
+
 def test_get_ai_analysis_retries_without_structured_output_when_model_rejects_it(
     monkeypatch, tmp_path
 ):
@@ -211,6 +239,45 @@ def test_get_ai_analysis_retries_without_temperature_when_gateway_rejects_it(
     assert result["reason"] == "ok"
     assert request_history[0]["temperature"] == 0.1
     assert "temperature" not in request_history[1]
+
+
+def test_get_ai_analysis_disables_thinking_for_deepseek(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    request_history = []
+
+    async def fake_create(**kwargs):
+        request_history.append(kwargs)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=(
+                            '{"prompt_version":"v1","is_recommended":true,'
+                            '"reason":"ok","risk_tags":[],"criteria_analysis":{"seller_type":"个人"}}'
+                        )
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setattr(ai_handler, "client", _build_fake_client(fake_create))
+    monkeypatch.setattr(ai_handler, "MODEL_NAME", "deepseek-flash")
+    monkeypatch.setattr(ai_handler, "ENABLE_RESPONSE_FORMAT", True)
+    monkeypatch.setattr(app_config, "ENABLE_RESPONSE_FORMAT", True)
+    monkeypatch.setattr(app_config, "ENABLE_THINKING", False)
+
+    result = asyncio.run(
+        ai_handler.get_ai_analysis(
+            {"商品信息": {"商品ID": "6", "商品标题": "测试商品6"}},
+            image_paths=[],
+            prompt_text="请输出 JSON",
+        )
+    )
+
+    assert result["reason"] == "ok"
+    assert request_history[0]["extra_body"]["thinking"] == {"type": "disabled"}
+    assert "enable_thinking" not in request_history[0]["extra_body"]
+    assert request_history[0]["reasoning_effort"] == "none"
 
 
 def test_get_ai_analysis_uses_first_json_object_when_model_returns_multiple_objects(

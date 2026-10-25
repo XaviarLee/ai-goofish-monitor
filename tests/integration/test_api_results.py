@@ -4,7 +4,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api.routes import results
-from src.services.price_history_service import record_market_snapshots
+from src.services.price_history_service import record_market_snapshots, record_sold_deal
+from src.services.result_storage_service import mark_result_item_sold
 
 
 def _write_jsonl(path, records):
@@ -126,8 +127,33 @@ def test_results_insights_and_export_csv(tmp_path, monkeypatch):
                 "keyword_hit_count": 0,
             },
         },
+        {
+            "爬取时间": "2026-01-01T09:00:00",
+            "搜索关键字": "demo",
+            "任务名称": "Demo 任务",
+            "商品信息": {
+                "商品ID": "3003",
+                "商品标题": "Demo Sold",
+                "商品链接": "https://www.goofish.com/item?id=3003",
+                "当前售价": "¥900",
+                "发布时间": "2026-01-01 08:00",
+            },
+            "卖家信息": {"卖家昵称": "卖家C"},
+            "ai_analysis": {
+                "analysis_source": "ai",
+                "is_recommended": True,
+                "reason": "当时价格合适",
+            },
+        },
     ]
     _write_jsonl(target_file, records)
+    mark_result_item_sold(
+        "demo",
+        "3003",
+        sold_at="2026-01-02T11:00:00",
+        sold_price=880,
+        seller_id="seller-c",
+    )
 
     record_market_snapshots(
         keyword="demo",
@@ -171,6 +197,17 @@ def test_results_insights_and_export_csv(tmp_path, monkeypatch):
         snapshot_time="2026-01-02T10:00:00",
         seen_item_ids=set(),
     )
+    record_sold_deal(
+        keyword="demo",
+        task_name="Demo 任务",
+        item_id="3003",
+        title="Demo Sold",
+        sold_price=880,
+        sold_price_display="880",
+        detected_at="2026-01-02T11:00:00",
+        source="seller_list",
+        link="https://www.goofish.com/item?id=3003",
+    )
 
     app = FastAPI()
     app.include_router(results.router)
@@ -180,12 +217,29 @@ def test_results_insights_and_export_csv(tmp_path, monkeypatch):
     assert insights_resp.status_code == 200
     insights = insights_resp.json()
     assert insights["market_summary"]["sample_count"] == 2
+    assert insights["market_summary"]["avg_price"] == 1065.0
+    assert insights["sold_summary"]["unique_items"] == 1
+    assert insights["sold_summary"]["avg_price"] == 880.0
     assert len(insights["daily_trend"]) == 2
 
     list_resp = client.get("/api/results/demo_full_data.jsonl")
     assert list_resp.status_code == 200
     items = list_resp.json()["items"]
+    assert list_resp.json()["total_items"] == 3
+    sold_item = next(item for item in items if item["商品信息"]["商品ID"] == "3003")
+    assert sold_item["_status"] == "sold"
+    assert sold_item["_hidden_reason"] == "sold"
+    assert sold_item["_effective_hidden"] is False
+    assert sold_item["_sold_price"] == 880.0
     assert items[0]["price_insight"]["observation_count"] >= 1
+
+    recommended_resp = client.get(
+        "/api/results/demo_full_data.jsonl",
+        params={"ai_recommended_only": True},
+    )
+    assert recommended_resp.status_code == 200
+    recommended_ids = [item["商品信息"]["商品ID"] for item in recommended_resp.json()["items"]]
+    assert "3003" in recommended_ids
 
     export_resp = client.get(
         "/api/results/demo_full_data.jsonl/export",

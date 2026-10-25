@@ -1,6 +1,7 @@
 import asyncio
+import re
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, Pattern, Union
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
@@ -11,7 +12,11 @@ NEXT_PAGE_SELECTOR = (
     ":has([class*='search-pagination-arrow-right'])"
     ":not([disabled])"
 )
-SEARCH_RESULTS_API_FRAGMENT = "/h5/mtop.taobao.idlemtopsearch.pc.search/1.0/"
+# 精确匹配 PC 搜索接口，允许版本号变化，并排除 search.shade 等联想接口。
+SEARCH_RESULTS_API_PATTERN = re.compile(
+    r"/h5/mtop\.taobao\.idlemtopsearch\.pc\.search/\d+\.\d+/"
+)
+SEARCH_RESULTS_API_FRAGMENT = "/h5/mtop.taobao.idlemtopsearch.pc.search/"
 PAGE_REQUEST_TIMEOUT_MS = 20_000
 PAGE_CLICK_TIMEOUT_MS = 10_000
 PAGE_RETRY_DELAY_SECONDS = 5
@@ -29,12 +34,19 @@ class PageAdvanceResult:
 
 def is_search_results_response(
     response: Any,
-    api_url_fragment: str = SEARCH_RESULTS_API_FRAGMENT,
+    api_url_fragment: Union[str, Pattern[str]] = SEARCH_RESULTS_API_PATTERN,
 ) -> bool:
+    response_url = getattr(response, "url", "") or ""
+    if isinstance(api_url_fragment, re.Pattern):
+        if not api_url_fragment.search(response_url):
+            return False
+    elif api_url_fragment not in response_url:
+        return False
+
     request = getattr(response, "request", None)
-    request_method = getattr(request, "method", None)
-    response_url = getattr(response, "url", "")
-    return api_url_fragment in response_url and request_method == "POST"
+    request_method = str(getattr(request, "method", "") or "").upper()
+    # 预检请求不是搜索结果；真实搜索接口以 POST 为主，也兼容 GET。
+    return request_method != "OPTIONS"
 
 
 async def advance_search_page(

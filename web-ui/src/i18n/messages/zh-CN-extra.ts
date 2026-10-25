@@ -243,6 +243,12 @@ const zhCNExtra = {
       urlLabel: '企业微信 Bot URL',
       configuredHint: '已保存机器人地址。',
     },
+    feishu: {
+      title: '飞书机器人',
+      description: '自定义机器人 Webhook 含 key，不回显。若开启了自定义关键词，请把「闲鱼」加进关键词。',
+      urlLabel: '飞书 Bot URL',
+      configuredHint: '已保存机器人地址。',
+    },
     telegram: {
       description: 'Bot Token 属于敏感字段，Chat ID 与反代地址可直接查看和修改。',
       chatIdPlaceholder: '例如：123456789',

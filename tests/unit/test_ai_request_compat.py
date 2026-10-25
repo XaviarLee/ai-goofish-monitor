@@ -1,4 +1,5 @@
 from src.services.ai_request_compat import (
+    apply_thinking_mode,
     is_json_output_unsupported_error,
     is_responses_api_unsupported_error,
     is_temperature_unsupported_error,
@@ -9,6 +10,46 @@ from src.services.ai_request_compat import (
 def test_is_temperature_unsupported_error_detects_unsupported_message():
     err = Exception("temperature is not supported by this gateway")
     assert is_temperature_unsupported_error(err) is True
+
+
+def test_apply_thinking_mode_disables_thinking_for_deepseek_by_default():
+    result = apply_thinking_mode(
+        {"model": "deepseek-flash", "temperature": 0.1},
+        enable_thinking=False,
+    )
+
+    assert result["extra_body"]["thinking"] == {"type": "disabled"}
+    assert "enable_thinking" not in result["extra_body"]
+    assert result["reasoning_effort"] == "none"
+    assert "reasoning" not in result
+    assert result["temperature"] == 0.1
+
+
+def test_apply_thinking_mode_skips_unrelated_models_when_thinking_is_off():
+    params = {"model": "gpt-4o-mini"}
+    result = apply_thinking_mode(params, enable_thinking=False)
+
+    assert "extra_body" not in result
+    assert result is not params
+
+
+def test_apply_thinking_mode_enables_thinking_when_requested():
+    result = apply_thinking_mode({"model": "qwen-plus"}, enable_thinking=True)
+
+    assert result["extra_body"]["thinking"] == {"type": "enabled"}
+    assert "enable_thinking" not in result["extra_body"]
+    assert "reasoning_effort" not in result
+
+
+def test_apply_thinking_mode_disables_responses_api_reasoning_for_deepseek():
+    result = apply_thinking_mode(
+        {"model": "deepseek-flash", "input": [{"role": "user", "content": []}]},
+        enable_thinking=False,
+    )
+
+    assert result["extra_body"]["thinking"] == {"type": "disabled"}
+    assert result["reasoning_effort"] == "none"
+    assert result["reasoning"] == {"effort": "none"}
 
 
 def test_remove_temperature_param_removes_only_temperature():

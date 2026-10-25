@@ -19,6 +19,7 @@ from src.infrastructure.config.env_manager import env_manager
 from src.services.ai_request_compat import (
     CHAT_COMPLETIONS_API_MODE,
     RESPONSES_API_MODE,
+    apply_thinking_mode,
     build_ai_request_params,
     create_ai_response_async,
     is_chat_completions_api_unsupported_error,
@@ -208,8 +209,10 @@ class AIClient:
             if not use_temperature:
                 request_params = remove_temperature_param(request_params)
 
-            if self.settings.enable_thinking:
-                request_params["extra_body"] = {"enable_thinking": False}
+            request_params = apply_thinking_mode(
+                request_params,
+                bool(self.settings.enable_thinking),
+            )
 
             try:
                 response = await create_ai_response_async(

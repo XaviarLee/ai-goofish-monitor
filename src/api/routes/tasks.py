@@ -26,7 +26,7 @@ from src.prompt_utils import generate_criteria
 from src.utils import resolve_task_log_path
 from src.services.account_strategy_service import normalize_account_strategy
 from src.infrastructure.persistence.storage_names import build_result_filename
-from src.services.price_history_service import delete_price_snapshots
+from src.services.price_history_service import delete_price_snapshots, delete_sold_deals
 from src.services.result_storage_service import delete_result_file_records
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -239,6 +239,7 @@ async def delete_task(
             if not keyword_still_in_use:
                 await delete_result_file_records(build_result_filename(keyword))
                 delete_price_snapshots(keyword)
+                delete_sold_deals(keyword)
     except Exception as e:
         print(f"删除任务结果文件时出错: {e}")
 

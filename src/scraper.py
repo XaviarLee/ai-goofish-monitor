@@ -34,6 +34,7 @@ from src.parsers import (
     parse_ratings_data,
     parse_user_head_data,
 )
+from src.keyword_rule_engine import item_matches_search_keyword
 from src.utils import (
     format_registration_days,
     get_link_unique_key,
@@ -53,10 +54,32 @@ from src.services.item_analysis_dispatcher import (
 from src.services.price_history_service import (
     build_market_reference,
     load_price_snapshots,
+    parse_price_value,
     record_market_snapshots,
+    record_sold_deal,
 )
-from src.services.result_storage_service import load_processed_link_keys
+from src.services.result_storage_service import (
+    load_active_result_items,
+    load_processed_link_keys,
+    mark_result_item_expired,
+    mark_result_item_sold,
+    update_result_item_seller_id,
+)
 from src.services.seller_profile_cache import SellerProfileCache
+from src.services.sold_detection import (
+    DEFAULT_DETAIL_SOLD_CHECK_LIMIT,
+    DEFAULT_SOLD_RECRAWL_LIMIT,
+    SoldMatch,
+    attach_inferred_seller_id,
+    classify_candidates_against_seller_list,
+    collect_search_item_ids,
+    extract_seller_id,
+    group_candidates_by_seller,
+    parse_detail_sold_status,
+    resolve_sold_price,
+    select_sellers_to_recrawl,
+    select_sold_candidates,
+)
 from src.services.search_pagination import (
     advance_search_page,
     is_search_results_response,
@@ -326,13 +349,33 @@ def _build_context_overrides(snapshot: dict) -> dict:
     return _clean_kwargs(overrides)
 
 
+# 快照里常混入文档导航/探针请求的头。这些头不能套到后续 XHR/搜索接口上，
+# 否则闲鱼可能直接不发 pc.search，表现为 expect_response 超时。
+_EXTRA_HEADER_BLOCKLIST = {
+    "cookie",
+    "content-length",
+    "content-type",
+    "host",
+    "connection",
+    "accept",
+    "accept-encoding",
+    "referer",
+    "origin",
+    "upgrade-insecure-requests",
+    "cache-control",
+    "pragma",
+}
+
+
 def _build_extra_headers(raw_headers: Optional[dict]) -> dict:
     if not raw_headers:
         return {}
-    excluded = {"cookie", "content-length"}
     headers = {}
     for key, value in raw_headers.items():
-        if not key or key.lower() in excluded or value is None:
+        if not key or value is None:
+            continue
+        lowered = key.lower()
+        if lowered in _EXTRA_HEADER_BLOCKLIST or lowered.startswith("sec-fetch-"):
             continue
         headers[key] = value
     return headers
@@ -442,6 +485,245 @@ async def scrape_user_profile(context, user_id: str) -> dict:
     return profile_data
 
 
+def _persist_sold_match(keyword: str, task_name: str, match) -> None:
+    detected_at = datetime.now().isoformat()
+    recorded = record_sold_deal(
+        keyword=keyword,
+        task_name=task_name,
+        item_id=match.item_id,
+        title=match.title,
+        sold_price=match.sold_price,
+        sold_price_display=match.sold_price_display,
+        last_listing_price=match.last_listing_price,
+        detected_at=detected_at,
+        source=match.source,
+        seller=match.seller,
+        seller_id=match.seller_id,
+        link=match.link,
+    )
+    mark_result_item_sold(
+        keyword,
+        match.item_id,
+        sold_at=detected_at,
+        sold_price=match.sold_price,
+        seller_id=match.seller_id,
+    )
+    title = (match.title or match.item_id)[:30]
+    if recorded:
+        log_time(f"[成交] 确认已售 {title}... ¥{match.sold_price} ({match.source})")
+    else:
+        log_time(f"[成交] 已记录过 {title}... 跳过重复写入")
+
+
+def _expire_missing_items(keyword: str, records: list[dict]) -> None:
+    for record in records:
+        item = record.get("商品信息") or {}
+        item_id = str(item.get("商品ID") or record.get("item_id") or "").strip()
+        if not item_id:
+            continue
+        if mark_result_item_expired(keyword, item_id):
+            title = str(item.get("商品标题") or record.get("title") or item_id)[:30]
+            log_time(f"[成交] 卖家列表未见 {title}... 标为下架，不记成交价")
+
+
+def _remember_seller_id(keyword: str, record: dict, seller_id: str) -> None:
+    seller_key = str(seller_id or "").strip()
+    if not seller_key:
+        return
+    attach_inferred_seller_id(record)
+    seller = record.setdefault("卖家信息", {})
+    seller["卖家ID"] = seller_key
+    item = record.get("商品信息") or {}
+    item_id = str(item.get("商品ID") or record.get("item_id") or "").strip()
+    if item_id:
+        update_result_item_seller_id(keyword, item_id, seller_key)
+
+
+async def _fetch_item_detail_json(context, link: str) -> Optional[dict]:
+    if not link:
+        return None
+    detail_page = await context.new_page()
+    try:
+        async with detail_page.expect_response(
+            lambda r: DETAIL_API_URL_PATTERN in r.url, timeout=25000
+        ) as detail_info:
+            await detail_page.goto(
+                link,
+                wait_until="domcontentloaded",
+                timeout=25000,
+            )
+        response = await detail_info.value
+        if not response.ok:
+            return None
+        return await response.json()
+    except Exception as exc:
+        log_time(f"[成交] 打开商品详情失败: {exc}")
+        return None
+    finally:
+        await detail_page.close()
+
+
+def _sold_match_from_detail(record: dict, detail: dict) -> Optional[SoldMatch]:
+    item = record.get("商品信息") or {}
+    item_id = str(item.get("商品ID") or record.get("item_id") or "").strip()
+    if not item_id:
+        return None
+    listing_price = record.get("price")
+    if listing_price is None:
+        listing_price = item.get("当前售价")
+    sold_price, display, source = resolve_sold_price(
+        seller_item={"商品价格": detail.get("sold_price_display") or detail.get("sold_price")},
+        listing_price=listing_price,
+    )
+    if sold_price is None:
+        sold_price = parse_price_value(listing_price)
+        display = str(listing_price or sold_price or "")
+        source = "listing_fallback"
+    if sold_price is None:
+        return None
+    seller_info = record.get("卖家信息") or {}
+    return SoldMatch(
+        item_id=item_id,
+        title=str(detail.get("title") or item.get("商品标题") or record.get("title") or ""),
+        sold_price=sold_price,
+        sold_price_display=display or str(sold_price),
+        last_listing_price=parse_price_value(listing_price),
+        source=detail.get("source") or source,
+        seller=str(seller_info.get("卖家昵称") or item.get("卖家昵称") or ""),
+        seller_id=str(detail.get("seller_id") or extract_seller_id(record) or ""),
+        link=str(item.get("商品链接") or record.get("link") or ""),
+        record=record,
+    )
+
+
+async def _check_candidates_via_detail(
+    *,
+    context,
+    keyword: str,
+    task_name: str,
+    records: list[dict],
+    search_ids: set[str],
+    limit: int = DEFAULT_DETAIL_SOLD_CHECK_LIMIT,
+) -> int:
+    confirmed = 0
+    pending = records[: max(0, limit)]
+    skipped = records[max(0, limit) :]
+    if skipped:
+        log_time(f"[成交] 详情核验上限 {limit}，本轮跳过 {len(skipped)} 条无卖家ID记录。")
+    for record in pending:
+        item = record.get("商品信息") or {}
+        item_id = str(item.get("商品ID") or record.get("item_id") or "").strip()
+        if not item_id or item_id in search_ids:
+            continue
+        link = str(item.get("商品链接") or record.get("link") or "")
+        title = str(item.get("商品标题") or record.get("title") or item_id)[:30]
+        detail_json = await _fetch_item_detail_json(context, link)
+        if not detail_json:
+            log_time(f"[成交] 详情无法确认 {title}... 保持在售")
+            await random_sleep(2, 4)
+            continue
+        parsed = parse_detail_sold_status(detail_json)
+        if parsed.get("seller_id"):
+            _remember_seller_id(keyword, record, parsed["seller_id"])
+        if parsed.get("state") == "sold":
+            match = _sold_match_from_detail(record, parsed)
+            if match is not None:
+                _persist_sold_match(keyword, task_name, match)
+                confirmed += 1
+        elif parsed.get("state") == "listed":
+            log_time(f"[成交] 详情仍在售 {title}... 保持在售")
+        else:
+            if mark_result_item_expired(keyword, item_id):
+                log_time(f"[成交] 详情未见在售/已售 {title}... 标为下架，不记成交价")
+        await random_sleep(2, 4)
+    return confirmed
+
+
+async def _detect_sold_deals(
+    *,
+    keyword: str,
+    task_name: str,
+    search_ids: set[str],
+    seller_profile_cache: SellerProfileCache,
+    seller_loader,
+    context=None,
+    recrawl_limit: int = DEFAULT_SOLD_RECRAWL_LIMIT,
+    detail_limit: int = DEFAULT_DETAIL_SOLD_CHECK_LIMIT,
+) -> int:
+    if not search_ids:
+        log_time("[成交] 本轮没有搜索命中，跳过成交核验，避免误标。")
+        return 0
+    previous_items = load_active_result_items(keyword)
+    candidates = select_sold_candidates(previous_items, search_ids)
+    if not candidates:
+        log_time("[成交] 没有需要核验的旧商品。")
+        return 0
+
+    for record in candidates:
+        seller_id = attach_inferred_seller_id(record)
+        if seller_id:
+            _remember_seller_id(keyword, record, seller_id)
+
+    grouped = group_candidates_by_seller(candidates)
+    confirmed = 0
+    cached_ids = seller_profile_cache.cached_ids()
+    for seller_id, seller_candidates in grouped.items():
+        cached_profile = seller_profile_cache.peek(seller_id)
+        if cached_profile is None:
+            continue
+        matches, _still_listed, missing = classify_candidates_against_seller_list(
+            seller_candidates,
+            cached_profile.get("卖家发布的商品列表") or [],
+            search_ids=search_ids,
+            seller_id=seller_id,
+        )
+        for match in matches:
+            _persist_sold_match(keyword, task_name, match)
+            confirmed += 1
+        _expire_missing_items(keyword, missing)
+
+    recrawl_ids, skipped_ids = select_sellers_to_recrawl(
+        grouped,
+        already_loaded=cached_ids,
+        limit=recrawl_limit,
+    )
+    if skipped_ids:
+        log_time(f"[成交] 本轮卖家核验上限 {recrawl_limit}，跳过 {len(skipped_ids)} 个卖家。")
+
+    for seller_id in recrawl_ids:
+        try:
+            profile = await seller_loader(seller_id)
+        except Exception as exc:
+            log_time(f"[成交] 复访卖家 {seller_id} 失败: {exc}")
+            continue
+        matches, _still_listed, missing = classify_candidates_against_seller_list(
+            grouped.get(seller_id) or [],
+            (profile or {}).get("卖家发布的商品列表") or [],
+            search_ids=search_ids,
+            seller_id=seller_id,
+        )
+        for match in matches:
+            _persist_sold_match(keyword, task_name, match)
+            confirmed += 1
+        _expire_missing_items(keyword, missing)
+        await random_sleep(2, 4)
+
+    unresolved = [record for record in candidates if not extract_seller_id(record)]
+    if unresolved and context is not None:
+        confirmed += await _check_candidates_via_detail(
+            context=context,
+            keyword=keyword,
+            task_name=task_name,
+            records=unresolved,
+            search_ids=search_ids,
+            limit=detail_limit,
+        )
+    elif unresolved:
+        log_time(f"[成交] {len(unresolved)} 条旧记录没有卖家ID，本轮跳过，保持在售。")
+    log_time(f"[成交] 本轮确认成交 {confirmed} 件。")
+    return confirmed
+
+
 async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     """
     【核心执行器】
@@ -468,6 +750,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
     processed_links = set()
     history_run_id = datetime.now().strftime("%Y%m%d%H%M%S")
     history_seen_item_ids: set[str] = set()
+    search_item_ids: set[str] = set()
     historical_snapshots = load_price_snapshots(keyword)
     result_filename = build_result_filename(keyword)
     processed_links = load_processed_link_keys(keyword)
@@ -655,19 +938,38 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 log_time(f"目标URL: {search_url}")
 
                 # 先监听搜索接口响应，再执行导航，避免错过首次请求
-                async with page.expect_response(
-                    is_search_results_response, timeout=30000
-                ) as initial_response_info:
-                    await page.goto(
-                        search_url, wait_until="domcontentloaded", timeout=60000
-                    )
-                if _is_login_url(page.url):
-                    raise LoginRequiredError(
-                        f"Login required: redirected to {page.url} (cookies/state likely expired)"
+                mtop_hits: list[str] = []
+
+                def _track_mtop_response(response: Response) -> None:
+                    url = response.url or ""
+                    if "mtop." not in url:
+                        return
+                    method = getattr(getattr(response, "request", None), "method", "?")
+                    mtop_hits.append(
+                        f"{method} {response.status} {url.split('?', 1)[0]}"
                     )
 
-                # 捕获初始搜索的API数据
-                initial_response = await initial_response_info.value
+                page.on("response", _track_mtop_response)
+                try:
+                    async with page.expect_response(
+                        is_search_results_response, timeout=30000
+                    ) as initial_response_info:
+                        await page.goto(
+                            search_url, wait_until="domcontentloaded", timeout=60000
+                        )
+                    if _is_login_url(page.url):
+                        raise LoginRequiredError(
+                            f"Login required: redirected to {page.url} (cookies/state likely expired)"
+                        )
+
+                    # 捕获初始搜索的API数据
+                    initial_response = await initial_response_info.value
+                except PlaywrightTimeoutError:
+                    preview = "; ".join(mtop_hits[-8:]) or "无 mtop 请求"
+                    log_time(f"搜索接口响应超时。最近 mtop 请求: {preview}")
+                    raise
+                finally:
+                    page.remove_listener("response", _track_mtop_response)
 
                 # 等待页面加载出关键筛选元素，以确认已成功进入搜索结果页
                 try:
@@ -941,6 +1243,7 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                     )
                     if not basic_items:
                         break
+                    search_item_ids.update(collect_search_item_ids(basic_items))
                     historical_snapshots.extend(
                         record_market_snapshots(
                             keyword=keyword,
@@ -961,10 +1264,17 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                             stop_scraping = True
                             break
 
+                        title = str(item_data.get("商品标题") or "")
+                        if not item_matches_search_keyword(item_data, keyword):
+                            log_time(
+                                f"[页内进度 {i}/{total_items_on_page}] 商品 '{title[:20]}...' 未命中关键词 '{keyword}'，跳过。"
+                            )
+                            continue
+
                         unique_key = get_link_unique_key(item_data["商品链接"])
                         if unique_key in processed_links:
                             log_time(
-                                f"[页内进度 {i}/{total_items_on_page}] 商品 '{item_data['商品标题'][:20]}...' 已存在，跳过。"
+                                f"[页内进度 {i}/{total_items_on_page}] 商品 '{title[:20]}...' 已存在，跳过。"
                             )
                             continue
 
@@ -1061,6 +1371,8 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                                 # ...[此处可添加更多从详情页解析出的商品信息]...
 
                                 user_id = await safe_get(seller_do, "sellerId")
+                                if user_id:
+                                    item_data["卖家ID"] = str(user_id)
 
                                 # 构建基础记录
                                 final_record = {
@@ -1167,6 +1479,20 @@ async def scrape_xianyu(task_config: dict, debug_limit: int = 0):
                 if analysis_dispatcher is not None:
                     log_time("等待后台分析任务完成...")
                     await analysis_dispatcher.join()
+                    try:
+                        await _detect_sold_deals(
+                            keyword=keyword,
+                            task_name=task_config.get("task_name", "Untitled Task"),
+                            search_ids=search_item_ids,
+                            seller_profile_cache=seller_profile_cache,
+                            seller_loader=lambda seller_id: seller_profile_cache.get_or_load(
+                                str(seller_id),
+                                lambda seller_key: scrape_user_profile(context, seller_key),
+                            ),
+                            context=context,
+                        )
+                    except Exception as exc:
+                        log_time(f"[成交] 核验旧商品失败: {exc}")
                 log_time("任务执行完毕，浏览器将在5秒后自动关闭...")
                 await asyncio.sleep(5)
                 if debug_limit:

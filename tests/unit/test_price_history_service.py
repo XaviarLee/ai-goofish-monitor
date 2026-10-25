@@ -1,8 +1,10 @@
 from src.services.price_history_service import (
     build_item_price_context,
+    build_market_reference,
     build_price_history_insights,
     load_price_snapshots,
     record_market_snapshots,
+    record_sold_deal,
 )
 
 
@@ -97,3 +99,59 @@ def test_record_market_snapshots_and_build_price_history_insights(tmp_path, monk
     assert item_context["max_price"] == 10000.0
     assert item_context["price_change_amount"] == -500.0
     assert item_context["deal_label"] == "高性价比"
+
+
+def test_sold_deals_stay_out_of_listing_averages(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    record_market_snapshots(
+        keyword="rtx 3090",
+        task_name="3090",
+        items=[
+            {
+                "商品ID": "1001",
+                "商品标题": "3090 公版",
+                "当前售价": "¥4000",
+                "商品链接": "https://www.goofish.com/item?id=1001",
+            }
+        ],
+        run_id="run-1",
+        snapshot_time="2026-01-01T12:00:00",
+    )
+    inserted = record_sold_deal(
+        keyword="rtx 3090",
+        task_name="3090",
+        item_id="2002",
+        title="3090 已售",
+        sold_price=3200,
+        sold_price_display="3200",
+        last_listing_price=3500,
+        detected_at="2026-01-02T12:00:00",
+        source="seller_list",
+        seller_id="s1",
+        link="https://www.goofish.com/item?id=2002",
+    )
+    assert inserted is True
+    assert record_sold_deal(
+        keyword="rtx 3090",
+        task_name="3090",
+        item_id="2002",
+        title="3090 已售",
+        sold_price=1,
+        detected_at="2026-01-03T12:00:00",
+    ) is False
+
+    insights = build_price_history_insights("rtx 3090")
+    assert insights["market_summary"]["avg_price"] == 4000.0
+    assert insights["sold_summary"]["unique_items"] == 1
+    assert insights["sold_summary"]["avg_price"] == 3200.0
+    assert insights["sold_daily_trend"][0]["day"] == "2026-01-02"
+
+    reference = build_market_reference(
+        keyword="rtx 3090",
+        item={"商品ID": "1001", "当前售价": "¥4000"},
+        current_market_items=[{"当前售价": "¥4000"}],
+        historical_snapshots=load_price_snapshots("rtx 3090"),
+    )
+    assert reference["当前搜索样本"]["avg_price"] == 4000.0
+    assert reference["近期成交概览"]["avg_price"] == 3200.0
+    assert reference["近期成交概览"]["unique_items"] == 1

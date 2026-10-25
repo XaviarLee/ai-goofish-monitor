@@ -18,6 +18,7 @@ export interface ProductInfo {
 
 export interface SellerInfo {
   "卖家昵称"?: string;
+  "卖家ID"?: string;
   "卖家头像链接"?: string;
   "卖家个性签名"?: string;
   "卖家在售/已售商品数"?: string;
@@ -91,6 +92,23 @@ export interface ResultInsights {
     max_price: number | null;
   }>;
   latest_snapshot_at?: string | null;
+  sold_summary?: {
+    unique_items: number;
+    sample_count: number;
+    avg_price: number | null;
+    median_price: number | null;
+    min_price: number | null;
+    max_price: number | null;
+    latest_sold_at?: string | null;
+  };
+  sold_daily_trend?: Array<{
+    day: string;
+    sample_count: number;
+    avg_price: number | null;
+    median_price: number | null;
+    min_price: number | null;
+    max_price: number | null;
+  }>;
 }
 
 export interface ResultItem {
@@ -101,8 +119,10 @@ export interface ResultItem {
   "卖家信息": SellerInfo;
   ai_analysis: AiAnalysis;
   price_insight?: PriceInsight;
-  _status?: 'active' | 'hidden' | 'expired';
+  _status?: 'active' | 'hidden' | 'expired' | 'sold';
   _effective_hidden?: boolean;
-  _hidden_reason?: 'manual' | 'rule' | 'expired' | null;
+  _hidden_reason?: 'manual' | 'rule' | 'expired' | 'sold' | null;
   _matched_blacklist_keywords?: string[];
+  _sold_at?: string | null;
+  _sold_price?: number | null;
 }

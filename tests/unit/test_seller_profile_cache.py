@@ -22,6 +22,9 @@ def test_seller_profile_cache_reuses_value_and_returns_copy():
     second = asyncio.run(run())
     assert loader_calls == 1
     assert second == {"user_id": "seller-1", "items": []}
+    peeked = cache.peek("seller-1")
+    assert peeked == {"user_id": "seller-1", "items": []}
+    assert cache.cached_ids() == {"seller-1"}
 
 
 def test_seller_profile_cache_coalesces_inflight_requests():

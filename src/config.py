@@ -4,6 +4,8 @@ import sys
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
+from src.services.ai_request_compat import apply_thinking_mode
+
 # --- AI & Notification Configuration ---
 load_dotenv()
 
@@ -30,6 +32,7 @@ GOTIFY_URL = os.getenv("GOTIFY_URL")
 GOTIFY_TOKEN = os.getenv("GOTIFY_TOKEN")
 BARK_URL = os.getenv("BARK_URL")
 WX_BOT_URL = os.getenv("WX_BOT_URL")
+FEISHU_BOT_URL = os.getenv("FEISHU_BOT_URL")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -90,9 +93,8 @@ def get_ai_request_params(**kwargs):
     """
     构建AI请求参数，根据ENABLE_THINKING和ENABLE_RESPONSE_FORMAT环境变量决定是否添加相应参数
     """
-    if ENABLE_THINKING:
-        kwargs["extra_body"] = {"enable_thinking": False}
-    
+    kwargs = apply_thinking_mode(kwargs, ENABLE_THINKING)
+
     # 如果禁用结构化输出，则移除 text.format 配置
     if not ENABLE_RESPONSE_FORMAT and "text" in kwargs:
         text_config = kwargs.get("text")
@@ -103,5 +105,5 @@ def get_ai_request_params(**kwargs):
                 kwargs["text"] = text_config
             else:
                 del kwargs["text"]
-    
+
     return kwargs

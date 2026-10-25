@@ -11,7 +11,7 @@
 - **AI 驱动**: 自然语言创建任务，多模态模型深度分析商品
 - **多任务并发**: 独立配置关键词、价格、筛选条件和 AI Prompt
 - **高级筛选**: 包邮、新发布时间范围、省/市/区三级区域筛选
-- **即时通知**: 支持 ntfy.sh、企业微信、Bark、Telegram、Webhook等多渠道
+- **即时通知**: 支持 ntfy.sh、企业微信、飞书、Bark、Telegram、Webhook 等多渠道
 - **定时调度**: 支持 Cron 配置周期性任务
 - **账号与代理轮换**: 多账号管理、任务绑定账号、代理池轮换与失败重试
 - **Docker 部署**: 一键容器化部署
@@ -208,6 +208,7 @@ cd web-ui && npm run build
 - `GOTIFY_URL` / `GOTIFY_TOKEN`
 - `BARK_URL`
 - `WX_BOT_URL`
+- `FEISHU_BOT_URL`
 - `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` / `TELEGRAM_API_BASE_URL`
 - `WEBHOOK_*`
 

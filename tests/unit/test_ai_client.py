@@ -75,6 +75,31 @@ def test_build_responses_input_converts_multimodal_messages():
     ]
 
 
+def test_call_ai_disables_thinking_for_deepseek_when_thinking_is_off():
+    client = AIClient.__new__(AIClient)
+    client.settings = SimpleNamespace(
+        model_name="deepseek-flash",
+        enable_response_format=True,
+        enable_thinking=False,
+    )
+    request_history = []
+
+    async def fake_create(**kwargs):
+        request_history.append(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok":true}'))]
+        )
+
+    client.client = _build_fake_client(fake_create)
+
+    response = asyncio.run(client._call_ai([{"role": "user", "content": "hi"}]))
+
+    assert response == '{"ok":true}'
+    assert request_history[0]["extra_body"]["thinking"] == {"type": "disabled"}
+    assert "enable_thinking" not in request_history[0]["extra_body"]
+    assert request_history[0]["reasoning_effort"] == "none"
+
+
 def test_call_ai_retries_without_structured_output_when_model_rejects_it():
     client = AIClient.__new__(AIClient)
     client.settings = SimpleNamespace(

@@ -65,6 +65,9 @@ SCHEMA_STATEMENTS = (
         analysis_source TEXT,
         keyword_hit_count INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'active',
+        seller_id TEXT,
+        sold_at TEXT,
+        sold_price REAL,
         raw_json TEXT NOT NULL,
         UNIQUE(result_filename, link_unique_key)
     )
@@ -122,6 +125,29 @@ SCHEMA_STATEMENTS = (
     CREATE INDEX IF NOT EXISTS idx_snapshots_keyword_item_time
     ON price_snapshots(keyword_slug, item_id, snapshot_time DESC)
     """,
+    """
+    CREATE TABLE IF NOT EXISTS sold_deals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        keyword_slug TEXT NOT NULL,
+        keyword TEXT NOT NULL,
+        task_name TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        title TEXT,
+        sold_price REAL NOT NULL,
+        sold_price_display TEXT,
+        last_listing_price REAL,
+        detected_at TEXT NOT NULL,
+        source TEXT NOT NULL,
+        seller TEXT,
+        seller_id TEXT,
+        link TEXT,
+        UNIQUE(keyword_slug, item_id)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_sold_deals_keyword_time
+    ON sold_deals(keyword_slug, detected_at DESC)
+    """,
 )
 
 
@@ -143,6 +169,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     for statement in SCHEMA_STATEMENTS:
         conn.execute(statement)
     _migrate_result_items_status(conn)
+    _migrate_sold_deals(conn)
     conn.commit()
 
 
@@ -164,6 +191,27 @@ def _migrate_result_items_status(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_results_filename_status_crawl"
         " ON result_items(result_filename, status, crawl_time DESC)"
+    )
+
+
+def _migrate_sold_deals(conn: sqlite3.Connection) -> None:
+    """为旧库补成交表和 result_items 成交字段。"""
+    row = conn.execute(
+        "SELECT value FROM app_metadata WHERE key = 'migration:sold_deals_v1'"
+    ).fetchone()
+    if row is not None:
+        return
+
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(result_items)").fetchall()]
+    if "seller_id" not in cols:
+        conn.execute("ALTER TABLE result_items ADD COLUMN seller_id TEXT")
+    if "sold_at" not in cols:
+        conn.execute("ALTER TABLE result_items ADD COLUMN sold_at TEXT")
+    if "sold_price" not in cols:
+        conn.execute("ALTER TABLE result_items ADD COLUMN sold_price REAL")
+
+    conn.execute(
+        "INSERT OR REPLACE INTO app_metadata(key, value) VALUES ('migration:sold_deals_v1', 'done')"
     )
 
 

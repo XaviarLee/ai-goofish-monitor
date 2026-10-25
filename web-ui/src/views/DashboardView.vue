@@ -80,6 +80,7 @@ const focusMeta = computed(() => {
 const insightCards = computed(() => {
   const market = focusInsights.value?.market_summary
   const history = focusInsights.value?.history_summary
+  const sold = focusInsights.value?.sold_summary
   return [
     {
       label: t('results.insights.currentAvg'),
@@ -96,7 +97,12 @@ const insightCards = computed(() => {
         : t('results.insights.noSnapshot'),
     },
     {
-      label: t('results.card.marketAvg'),
+      label: t('results.insights.soldAvg'),
+      value: sold?.avg_price ? `¥${sold.avg_price}` : '—',
+      hint: t('results.insights.soldCount', { count: sold?.unique_items || 0 }),
+    },
+    {
+      label: t('results.insights.currentMin'),
       value: market?.min_price ? `¥${market.min_price}` : '—',
       hint: market?.max_price
         ? t('results.insights.highestPrice', { price: market.max_price })
@@ -196,7 +202,7 @@ function openActivity(activity: { filename: string | null; type: string }) {
             {{ t('dashboard.focus.noResults') }}
           </div>
           <template v-else>
-            <div class="grid gap-4 md:grid-cols-3">
+            <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <article
                 v-for="card in insightCards"
                 :key="card.label"
@@ -207,7 +213,10 @@ function openActivity(activity: { filename: string | null; type: string }) {
                 <p class="mt-2 text-xs text-slate-500">{{ card.hint }}</p>
               </article>
             </div>
-            <PriceTrendChart :points="focusInsights?.daily_trend || []" />
+            <PriceTrendChart
+              :points="focusInsights?.daily_trend || []"
+              :sold-points="focusInsights?.sold_daily_trend || []"
+            />
             <div class="grid gap-3 rounded-[28px] border border-slate-200/70 bg-white/80 p-5 shadow-sm md:grid-cols-3">
               <div class="rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-600">
                 {{ t('dashboard.focus.currentMedian') }}

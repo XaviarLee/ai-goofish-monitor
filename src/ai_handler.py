@@ -30,6 +30,10 @@ from src.ai_message_builder import (
     build_analysis_text_prompt,
     build_user_message_content,
 )
+from src.services.ai_analysis_schema import (
+    normalize_ai_analysis_result,
+    validate_ai_analysis_result,
+)
 from src.services.ai_response_parser import (
     EmptyAIResponseError,
     extract_ai_response_content,
@@ -239,41 +243,26 @@ def encode_image_to_base64(image_path):
 
 def validate_ai_response_format(parsed_response):
     """验证AI响应的格式是否符合预期结构"""
-    required_fields = [
-        "prompt_version",
-        "is_recommended",
-        "reason",
-        "risk_tags",
-        "criteria_analysis"
-    ]
+    if validate_ai_analysis_result(parsed_response):
+        return True
 
-    # 检查顶层字段
-    for field in required_fields:
-        if field not in parsed_response:
-            safe_print(f"   [AI分析] 警告：响应缺少必需字段 '{field}'")
-            return False
-
-    # 检查criteria_analysis是否为字典且不为空
-    criteria_analysis = parsed_response.get("criteria_analysis", {})
-    if not isinstance(criteria_analysis, dict) or not criteria_analysis:
-        safe_print("   [AI分析] 警告：criteria_analysis必须是非空字典")
+    if not isinstance(parsed_response, dict):
+        safe_print("   [AI分析] 警告：响应不是 JSON 对象")
         return False
-
-    # 检查seller_type字段（所有商品都需要）
-    if "seller_type" not in criteria_analysis:
-        safe_print("   [AI分析] 警告：criteria_analysis缺少必需字段 'seller_type'")
-        return False
-
-    # 检查数据类型
+    if not str(parsed_response.get("prompt_version") or "").strip():
+        safe_print("   [AI分析] 警告：响应缺少必需字段 'prompt_version'")
     if not isinstance(parsed_response.get("is_recommended"), bool):
         safe_print("   [AI分析] 警告：is_recommended字段不是布尔类型")
-        return False
-
+    if not isinstance(parsed_response.get("reason"), str):
+        safe_print("   [AI分析] 警告：reason字段不是字符串")
     if not isinstance(parsed_response.get("risk_tags"), list):
         safe_print("   [AI分析] 警告：risk_tags字段不是列表类型")
-        return False
-
-    return True
+    criteria_analysis = parsed_response.get("criteria_analysis")
+    if not isinstance(criteria_analysis, dict) or not criteria_analysis:
+        safe_print("   [AI分析] 警告：criteria_analysis必须是非空字典")
+    elif "seller_type" not in criteria_analysis:
+        safe_print("   [AI分析] 警告：criteria_analysis缺少必需字段 'seller_type'")
+    return False
 
 
 @retry_on_failure(retries=3, delay=5)
@@ -322,12 +311,17 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
         safe_print(prompt_text)
         safe_print("-------------------\n")
 
+    max_images = _positive_int(os.getenv("AI_MAX_IMAGES", "4"), 4)
+    selected_image_paths = list(image_paths or [])[:max_images]
+    if image_paths and len(image_paths) > max_images:
+        safe_print(
+            f"   [AI分析] 图片过多，仅送入前 {max_images}/{len(image_paths)} 张以避免输出截断。"
+        )
     image_data_urls = []
-    if image_paths:
-        for path in image_paths:
-            base64_image = encode_image_to_base64(path)
-            if base64_image:
-                image_data_urls.append(f"data:image/jpeg;base64,{base64_image}")
+    for path in selected_image_paths:
+        base64_image = encode_image_to_base64(path)
+        if base64_image:
+            image_data_urls.append(f"data:image/jpeg;base64,{base64_image}")
 
     combined_text_prompt = build_analysis_text_prompt(
         product_details_json,
@@ -419,28 +413,26 @@ async def get_ai_analysis(product_data, image_paths=None, prompt_text=""):
 
             try:
                 parsed_response = parse_ai_response_json(ai_response_content)
-
-                # 验证响应格式
-                if validate_ai_response_format(parsed_response):
-                    safe_print(f"   [AI分析] 第{attempt + 1}次尝试成功，响应格式验证通过")
-                    return parsed_response
-                safe_print(f"   [AI分析] 第{attempt + 1}次尝试格式验证失败")
-                if attempt < max_retries - 1:
-                    safe_print(f"   [AI分析] 准备第{attempt + 2}次重试...")
-                    continue
-                raise ValueError("AI响应格式缺少必需字段或字段类型不正确。")
-            except json.JSONDecodeError as e:
+            except (json.JSONDecodeError, ValueError) as e:
+                preview = " ".join(str(ai_response_content).split())[:240]
                 safe_print(f"   [AI分析] 第{attempt + 1}次尝试JSON解析失败: {e}")
+                safe_print(f"   [AI分析] 原始响应片段: {preview}")
                 if attempt < max_retries - 1:
                     safe_print(f"   [AI分析] 准备第{attempt + 2}次重试...")
                     continue
                 raise e
-            except EmptyAIResponseError as e:
-                safe_print(f"   [AI分析] 第{attempt + 1}次尝试返回空响应: {e}")
-                if attempt < max_retries - 1:
-                    safe_print(f"   [AI分析] 准备第{attempt + 2}次重试...")
-                    continue
-                raise e
+
+            parsed_response = normalize_ai_analysis_result(parsed_response)
+            if validate_ai_response_format(parsed_response):
+                safe_print(f"   [AI分析] 第{attempt + 1}次尝试成功，响应格式验证通过")
+                return parsed_response
+            preview = " ".join(str(ai_response_content).split())[:240]
+            safe_print(f"   [AI分析] 第{attempt + 1}次尝试格式验证失败")
+            safe_print(f"   [AI分析] 原始响应片段: {preview}")
+            if attempt < max_retries - 1:
+                safe_print(f"   [AI分析] 准备第{attempt + 2}次重试...")
+                continue
+            raise ValueError("AI响应格式缺少必需字段或字段类型不正确。")
 
         except Exception as e:
             if (

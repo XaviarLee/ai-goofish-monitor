@@ -1,4 +1,8 @@
-from src.keyword_rule_engine import build_search_text, evaluate_keyword_rules
+from src.keyword_rule_engine import (
+    build_search_text,
+    evaluate_keyword_rules,
+    item_matches_search_keyword,
+)
 
 
 def _sample_record():
@@ -56,6 +60,22 @@ def test_keyword_rules_do_not_partially_match_alphanumeric_prefixes():
     result = evaluate_keyword_rules(["q1"], "富士 q1r5 旗舰相机")
     assert result["is_recommended"] is False
     assert result["keyword_hit_count"] == 0
+
+
+def test_item_matches_search_keyword_keeps_rtx3090_variants():
+    assert item_matches_search_keyword({"商品标题": "七彩虹 RTX 3090 24G"}, "3090") is True
+    assert item_matches_search_keyword({"商品标题": "华硕rtx-3090ti 战斧"}, "3090") is True
+    assert item_matches_search_keyword({"商品标题": "RTX3090 公版"}, "3090") is True
+
+
+def test_item_matches_search_keyword_rejects_unrelated_gpu_listings():
+    assert item_matches_search_keyword({"商品标题": "七彩虹 RTX 3080 10G"}, "3090") is False
+    assert item_matches_search_keyword({"商品标题": "华硕 RTX 5070 12G"}, "3090") is False
+    assert item_matches_search_keyword({"商品标题": "Barbour 夹克"}, "3090") is False
+
+
+def test_item_matches_search_keyword_does_not_match_inside_longer_numbers():
+    assert item_matches_search_keyword({"商品标题": "房间号 13090 钥匙"}, "3090") is False
 
 
 def test_keyword_rules_still_match_full_alphanumeric_token():

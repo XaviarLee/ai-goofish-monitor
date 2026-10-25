@@ -129,3 +129,4 @@ def test_item_analysis_dispatcher_supports_keyword_mode_without_ai():
     asyncio.run(run())
     assert saved_records[0]["ai_analysis"]["analysis_source"] == "keyword"
     assert saved_records[0]["ai_analysis"]["is_recommended"] is True
+    assert saved_records[0]["卖家信息"]["卖家ID"] == "seller-1"

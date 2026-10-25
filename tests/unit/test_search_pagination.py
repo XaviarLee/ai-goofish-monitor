@@ -210,10 +210,28 @@ def test_is_search_results_response_rejects_search_shade_api() -> None:
     assert is_search_results_response(response) is False
 
 
-def test_is_search_results_response_rejects_non_post_request() -> None:
+def test_is_search_results_response_accepts_get_request() -> None:
     response = FakeResponse(
         url="https://h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search/1.0/?foo=bar",
         method="GET",
     )
 
+    assert is_search_results_response(response) is True
+
+
+def test_is_search_results_response_rejects_options_request() -> None:
+    response = FakeResponse(
+        url="https://h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search/1.0/?foo=bar",
+        method="OPTIONS",
+    )
+
     assert is_search_results_response(response) is False
+
+
+def test_is_search_results_response_accepts_version_other_than_1_0() -> None:
+    response = FakeResponse(
+        url="https://h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search/2.0/?foo=bar",
+        method="POST",
+    )
+
+    assert is_search_results_response(response) is True

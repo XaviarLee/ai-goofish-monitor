@@ -1,4 +1,5 @@
 .idea
+.venv/
 *.iml
 xianyu_state.json
 .env

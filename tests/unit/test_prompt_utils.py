@@ -19,7 +19,7 @@ def test_generate_criteria_closes_ai_client_after_success(monkeypatch, tmp_path)
             raise AssertionError("refresh should not be called")
 
         async def _call_ai(self, *_args, **_kwargs):
-            return "generated criteria"
+            return "### **第一部分：核心分析原则 (不可违背)**\n1. 画像优先原则"
 
         async def close(self):
             close_state["closed"] = True
@@ -30,7 +30,7 @@ def test_generate_criteria_closes_ai_client_after_success(monkeypatch, tmp_path)
         prompt_utils.generate_criteria("need a gpu", str(reference_file))
     )
 
-    assert result == "generated criteria"
+    assert "核心分析原则" in result
     assert close_state["closed"] is True
 
 
@@ -58,3 +58,10 @@ def test_generate_criteria_closes_ai_client_after_ai_failure(monkeypatch, tmp_pa
         asyncio.run(prompt_utils.generate_criteria("need a gpu", str(reference_file)))
 
     assert close_state["closed"] is True
+
+
+def test_sanitize_generated_criteria_rejects_thinking_draft():
+    with pytest.raises(RuntimeError, match="生成过程草稿"):
+        prompt_utils._sanitize_generated_criteria(
+            "我们需要回答用户。用户要求生成全新的分析标准文本，模仿参考范例结构。"
+        )

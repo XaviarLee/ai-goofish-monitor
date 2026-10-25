@@ -74,3 +74,22 @@ def test_failure_guard_auto_recovers_on_cookie_change(tmp_path):
         now=base + timedelta(minutes=1),
     )
     assert recovered.skip is False
+
+
+def test_failure_guard_repeated_writes_do_not_leave_tmp_or_lock_target(tmp_path):
+    guard_path = tmp_path / "guard.json"
+    guard = FailureGuard(
+        path=str(guard_path),
+        threshold=5,
+        pause_seconds=60,
+        tz_name="Asia/Shanghai",
+    )
+    base = datetime(2026, 3, 4, 12, 0, 0)
+
+    for index in range(3):
+        guard.record_failure("task-a", f"err-{index}", now=base)
+
+    assert guard_path.exists()
+    assert not (tmp_path / "guard.json.tmp").exists()
+    data = guard.should_skip_start("task-a", now=base)
+    assert data.consecutive_failures == 3

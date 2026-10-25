@@ -41,12 +41,18 @@ const crawlTime = props.item.爬取时间
   : t('common.unknown')
 const matchScore = ai?.value_score ?? 0
 const isHidden = computed(() => props.item._effective_hidden === true || props.item._status === 'hidden')
+const isSold = computed(() => props.item._status === 'sold' || props.item._hidden_reason === 'sold')
 const isRuleHidden = computed(() => props.item._hidden_reason === 'rule')
-const canToggleBlock = computed(() => props.item._hidden_reason !== 'rule' && props.item._hidden_reason !== 'expired')
+const canToggleBlock = computed(() => props.item._hidden_reason !== 'rule' && props.item._hidden_reason !== 'expired' && props.item._hidden_reason !== 'sold')
 const hiddenLabel = computed(() => {
   if (props.item._hidden_reason === 'rule') return t('results.card.blacklisted')
   if (props.item._hidden_reason === 'expired') return t('results.card.expired')
+  if (isSold.value) return t('results.card.sold')
   return t('results.card.hidden')
+})
+const soldPriceText = computed(() => {
+  if (typeof props.item._sold_price === 'number') return `¥${props.item._sold_price}`
+  return info.当前售价
 })
 
 const expanded = ref(false)
@@ -70,7 +76,10 @@ const expanded = ref(false)
       </div>
       <!-- Overlays -->
       <div class="absolute top-3 left-3 flex gap-2">
-        <Badge v-if="isRecommended && !isHidden" variant="default" class="bg-emerald-500/90 backdrop-blur-md border-none shadow-sm">
+        <Badge v-if="isSold" variant="default" class="bg-slate-900/80 backdrop-blur-md border-none shadow-sm">
+          {{ t('results.card.sold') }}
+        </Badge>
+        <Badge v-else-if="isRecommended && !isHidden" variant="default" class="bg-emerald-500/90 backdrop-blur-md border-none shadow-sm">
           {{ t('results.card.curated') }}
         </Badge>
         <Badge v-if="isRuleHidden" variant="secondary" class="bg-slate-900/75 text-white border-none backdrop-blur-md shadow-sm">
@@ -109,8 +118,11 @@ const expanded = ref(false)
         </CardTitle>
       </div>
       <div class="flex items-baseline gap-1 mt-2">
-        <span class="text-2xl font-bold text-rose-600 tracking-tight">{{ info.当前售价 }}</span>
-        <span v-if="info['商品原价']" class="text-xs text-slate-400 line-through mb-1">{{ info['商品原价'] }}</span>
+        <span class="text-2xl font-bold tracking-tight" :class="isSold ? 'text-slate-700' : 'text-rose-600'">
+          {{ isSold ? soldPriceText : info.当前售价 }}
+        </span>
+        <span v-if="isSold" class="text-xs text-slate-400 mb-1">{{ t('results.card.sold') }}</span>
+        <span v-else-if="info['商品原价']" class="text-xs text-slate-400 line-through mb-1">{{ info['商品原价'] }}</span>
       </div>
     </CardHeader>
 

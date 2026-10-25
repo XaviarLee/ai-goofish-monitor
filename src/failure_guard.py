@@ -90,8 +90,23 @@ def _cookie_changed(
 class _FileLock:
     def __init__(self, fh):
         self._fh = fh
+        self._windows = os.name == "nt"
 
     def __enter__(self):
+        if self._windows:
+            try:
+                import msvcrt
+
+                self._fh.seek(0)
+                if self._fh.read(1) == "":
+                    self._fh.write("\0")
+                    self._fh.flush()
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
+            except Exception:
+                pass
+            return self
+
         try:
             import fcntl
 
@@ -101,6 +116,16 @@ class _FileLock:
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        if self._windows:
+            try:
+                import msvcrt
+
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+            except Exception:
+                pass
+            return False
+
         try:
             import fcntl
 
@@ -116,6 +141,21 @@ def _ensure_parent_dir(path: str) -> None:
         os.makedirs(parent, exist_ok=True)
 
 
+def _replace_file(src: str, dst: str, retries: int = 8) -> None:
+    delay = 0.05
+    last_error: Optional[Exception] = None
+    for _ in range(retries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as e:
+            last_error = e
+            time.sleep(delay)
+            delay = min(delay * 2, 0.5)
+    if last_error:
+        raise last_error
+
+
 def _read_json_file(path: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -127,7 +167,7 @@ def _read_json_file(path: str) -> dict:
         # 文件损坏时保留现场，避免无限解析失败。
         try:
             ts = str(int(time.time()))
-            os.replace(path, f"{path}.corrupt.{ts}")
+            _replace_file(path, f"{path}.corrupt.{ts}")
         except Exception:
             pass
         return {}
@@ -140,7 +180,7 @@ def _atomic_write_json(path: str, data: dict) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    _replace_file(tmp, path)
 
 
 @dataclass(frozen=True)
@@ -188,9 +228,10 @@ class FailureGuard:
 
     def _update_task(self, task_key: str, updater) -> dict:
         _ensure_parent_dir(self.path)
-        with open(self.path, "a+", encoding="utf-8") as fh:
+        # 锁独立的 .lock 文件，避免 Windows 上占用 JSON 导致 os.replace 拒绝访问。
+        lock_path = f"{self.path}.lock"
+        with open(lock_path, "a+", encoding="utf-8") as fh:
             with _FileLock(fh):
-                fh.seek(0)
                 data = self._load()
                 tasks = data.setdefault("tasks", {})
                 entry = tasks.get(task_key) or {}

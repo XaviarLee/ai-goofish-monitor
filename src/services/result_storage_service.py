@@ -16,6 +16,7 @@ from src.services.result_blacklist_service import (
     match_blacklist_keywords,
     normalize_blacklist_keywords,
 )
+from src.services.sold_detection import infer_seller_id_from_record
 
 
 SORT_COLUMN_MAP = {
@@ -40,10 +41,20 @@ def _fallback_unique_key(record: dict, item: dict) -> str:
     return f"hash:{digest}"
 
 
-def _parse_raw_record(raw_json: str, *, status: str | None = None) -> dict:
+def _parse_raw_record(
+    raw_json: str,
+    *,
+    status: str | None = None,
+    sold_at: str | None = None,
+    sold_price=None,
+) -> dict:
     record = json.loads(raw_json)
     if status is not None:
         record["_status"] = status
+    if sold_at:
+        record["_sold_at"] = sold_at
+    if sold_price is not None:
+        record["_sold_price"] = sold_price
     return record
 
 
@@ -69,7 +80,10 @@ def _build_query_conditions(
 def _sort_expression(sort_by: str, sort_order: str) -> str:
     column = SORT_COLUMN_MAP.get(sort_by, SORT_COLUMN_MAP["crawl_time"])
     direction = "ASC" if sort_order == "asc" else "DESC"
-    return f"(CASE WHEN status = 'active' THEN 0 ELSE 1 END), {column} {direction}, id {direction}"
+    return (
+        "(CASE WHEN status IN ('active', 'sold') THEN 0 ELSE 1 END), "
+        f"{column} {direction}, id {direction}"
+    )
 
 
 def _load_blacklist_keywords_from_conn(conn, filename: str) -> list[str]:
@@ -95,6 +109,8 @@ def _decorate_record_visibility(record: dict, status: str | None, blacklist_keyw
     hidden_reason = None
     if status == "expired":
         hidden_reason = "expired"
+    elif status == "sold":
+        hidden_reason = "sold"
     elif status and status != "active":
         hidden_reason = "manual"
     elif matched_keywords:
@@ -103,7 +119,8 @@ def _decorate_record_visibility(record: dict, status: str | None, blacklist_keyw
     record["_status"] = status or "active"
     record["_matched_blacklist_keywords"] = matched_keywords
     record["_hidden_reason"] = hidden_reason
-    record["_effective_hidden"] = hidden_reason is not None
+    # 已成交要出现在默认列表里，方便对照成交价；下架/屏蔽仍隐藏。
+    record["_effective_hidden"] = hidden_reason is not None and hidden_reason != "sold"
     return record
 
 
@@ -129,7 +146,7 @@ def _load_filtered_records_from_conn(
     order_clause = _sort_expression(sort_by, sort_order)
     rows = conn.execute(
         f"""
-        SELECT raw_json, status
+        SELECT raw_json, status, sold_at, sold_price
         FROM result_items
         WHERE {where_clause}
         ORDER BY {order_clause}
@@ -140,7 +157,12 @@ def _load_filtered_records_from_conn(
 
     records: list[dict] = []
     for row in rows:
-        record = _parse_raw_record(str(row["raw_json"]), status=row["status"])
+        record = _parse_raw_record(
+            str(row["raw_json"]),
+            status=row["status"],
+            sold_at=row["sold_at"],
+            sold_price=row["sold_price"],
+        )
         decorated = _decorate_record_visibility(record, row["status"], blacklist_keywords)
         if include_hidden or _is_record_visible(decorated):
             records.append(decorated)
@@ -155,6 +177,7 @@ def _save_result_record_sync(record: dict, keyword: str) -> bool:
     bootstrap_sqlite_storage()
     item = record.get("商品信息", {}) or {}
     analysis = record.get("ai_analysis", {}) or {}
+    seller = record.get("卖家信息", {}) or {}
     link = str(item.get("商品链接") or "")
     link_unique_key = _get_link_unique_key(link) if link else _fallback_unique_key(record, item)
     keyword_hit_count = analysis.get("keyword_hit_count", 0)
@@ -162,6 +185,7 @@ def _save_result_record_sync(record: dict, keyword: str) -> bool:
         keyword_hit_count = int(keyword_hit_count)
     except (TypeError, ValueError):
         keyword_hit_count = 0
+    seller_id = str(seller.get("卖家ID") or item.get("卖家ID") or "").strip() or None
 
     with sqlite_connection() as conn:
         conn.execute(
@@ -169,8 +193,8 @@ def _save_result_record_sync(record: dict, keyword: str) -> bool:
             INSERT OR IGNORE INTO result_items (
                 result_filename, keyword, task_name, crawl_time, publish_time, price,
                 price_display, item_id, title, link, link_unique_key, seller_nickname,
-                is_recommended, analysis_source, keyword_hit_count, raw_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                is_recommended, analysis_source, keyword_hit_count, seller_id, raw_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 build_result_filename(keyword),
@@ -184,10 +208,11 @@ def _save_result_record_sync(record: dict, keyword: str) -> bool:
                 item.get("商品标题"),
                 link,
                 link_unique_key,
-                (record.get("卖家信息", {}) or {}).get("卖家昵称") or item.get("卖家昵称"),
+                seller.get("卖家昵称") or item.get("卖家昵称"),
                 1 if analysis.get("is_recommended") else 0,
                 analysis.get("analysis_source"),
                 keyword_hit_count,
+                seller_id,
                 json.dumps(record, ensure_ascii=False),
             ),
         )
@@ -403,7 +428,7 @@ def _load_result_summary_sync(filename: str) -> dict | None:
 
 
 async def update_item_status(filename: str, item_id: str, status: str) -> bool:
-    valid = {"active", "hidden", "expired"}
+    valid = {"active", "hidden", "expired", "sold"}
     if status not in valid:
         raise ValueError(f"status must be one of {valid}")
     return await asyncio.to_thread(_update_item_status_sync, filename, item_id, status)
@@ -454,6 +479,123 @@ def _save_result_blacklist_keywords_sync(filename: str, keywords: list[str]) -> 
     return normalized_keywords
 
 
+def load_active_result_items(keyword: str) -> list[dict]:
+    """加载仍视为在售、可供成交核验的旧结果。"""
+    bootstrap_sqlite_storage()
+    filename = build_result_filename(keyword)
+    with sqlite_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT raw_json, status, seller_id, sold_at, sold_price, item_id,
+                   price, title, link, seller_nickname
+            FROM result_items
+            WHERE result_filename = ?
+              AND status = 'active'
+              AND sold_at IS NULL
+            ORDER BY id ASC
+            """,
+            (filename,),
+        ).fetchall()
+
+    records: list[dict] = []
+    for row in rows:
+        try:
+            record = json.loads(str(row["raw_json"]))
+        except json.JSONDecodeError:
+            record = {}
+        item = record.get("商品信息") or {}
+        seller = record.get("卖家信息") or {}
+        item_id = str(row["item_id"] or item.get("商品ID") or "").strip()
+        if item_id:
+            item.setdefault("商品ID", item_id)
+        if row["title"]:
+            item.setdefault("商品标题", row["title"])
+        if row["link"]:
+            item.setdefault("商品链接", row["link"])
+        if row["price"] is not None:
+            item.setdefault("当前售价", row["price"])
+        seller_id = str(row["seller_id"] or seller.get("卖家ID") or "").strip()
+        if not seller_id:
+            seller_id = infer_seller_id_from_record(record)
+        if seller_id:
+            seller["卖家ID"] = seller_id
+        if row["seller_nickname"]:
+            seller.setdefault("卖家昵称", row["seller_nickname"])
+        record["商品信息"] = item
+        record["卖家信息"] = seller
+        record["item_id"] = item_id
+        record["title"] = row["title"] or item.get("商品标题") or ""
+        record["link"] = row["link"] or item.get("商品链接") or ""
+        record["price"] = row["price"]
+        record["status"] = row["status"] or "active"
+        record["sold_at"] = row["sold_at"]
+        records.append(record)
+    return records
+
+
+def mark_result_item_sold(
+    keyword: str,
+    item_id: str,
+    *,
+    sold_at: str,
+    sold_price: float,
+    seller_id: str = "",
+) -> bool:
+    bootstrap_sqlite_storage()
+    filename = build_result_filename(keyword)
+    with sqlite_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE result_items
+            SET status = 'sold',
+                sold_at = ?,
+                sold_price = ?,
+                seller_id = COALESCE(NULLIF(seller_id, ''), ?)
+            WHERE result_filename = ? AND item_id = ?
+            """,
+            (sold_at, sold_price, seller_id or None, filename, item_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def update_result_item_seller_id(keyword: str, item_id: str, seller_id: str) -> bool:
+    seller_key = str(seller_id or "").strip()
+    if not seller_key:
+        return False
+    bootstrap_sqlite_storage()
+    filename = build_result_filename(keyword)
+    with sqlite_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE result_items
+            SET seller_id = COALESCE(NULLIF(seller_id, ''), ?)
+            WHERE result_filename = ? AND item_id = ?
+            """,
+            (seller_key, filename, item_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def mark_result_item_expired(keyword: str, item_id: str) -> bool:
+    bootstrap_sqlite_storage()
+    filename = build_result_filename(keyword)
+    with sqlite_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE result_items
+            SET status = 'expired'
+            WHERE result_filename = ?
+              AND item_id = ?
+              AND status = 'active'
+            """,
+            (filename, item_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+
+
 def load_visible_result_item_ids(filename: str) -> set[str]:
     bootstrap_sqlite_storage()
     with sqlite_connection() as conn:
@@ -468,6 +610,8 @@ def load_visible_result_item_ids(filename: str) -> set[str]:
         )
     item_ids: set[str] = set()
     for record in visible_records:
+        if str(record.get("_status") or "") == "sold":
+            continue
         product = record.get("商品信息", {}) or {}
         item_id = str(product.get("商品ID") or "").strip()
         if item_id:

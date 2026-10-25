@@ -15,6 +15,7 @@ const summaryCards = computed(() => {
   if (!props.insights) return []
   const market = props.insights.market_summary
   const history = props.insights.history_summary
+  const sold = props.insights.sold_summary
   return [
     {
       label: t('results.insights.currentAvg'),
@@ -25,6 +26,11 @@ const summaryCards = computed(() => {
       label: t('results.insights.historyAvg'),
       value: history.avg_price ? `¥${history.avg_price}` : '—',
       hint: t('results.insights.uniqueItems', { count: history.unique_items || 0 }),
+    },
+    {
+      label: t('results.insights.soldAvg'),
+      value: sold?.avg_price ? `¥${sold.avg_price}` : '—',
+      hint: t('results.insights.soldCount', { count: sold?.unique_items || 0 }),
     },
     {
       label: t('results.insights.currentMin'),
@@ -61,7 +67,7 @@ const latestSnapshotText = computed(() => {
           </p>
         </div>
 
-        <div class="grid gap-4 md:grid-cols-3">
+        <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <article
             v-for="card in summaryCards"
             :key="card.label"
@@ -73,7 +79,10 @@ const latestSnapshotText = computed(() => {
           </article>
         </div>
 
-        <PriceTrendChart :points="insights?.daily_trend || []" />
+        <PriceTrendChart
+          :points="insights?.daily_trend || []"
+          :sold-points="insights?.sold_daily_trend || []"
+        />
       </div>
 
       <div class="space-y-4">

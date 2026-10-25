@@ -37,6 +37,32 @@ def test_parse_ai_response_json_raises_when_no_json_exists():
         parse_ai_response_json("没有任何 JSON 内容")
 
 
+def test_parse_ai_response_json_unwraps_list_payload():
+    content = '[{"is_recommended": false, "reason": "from-list"}]'
+
+    result = parse_ai_response_json(content)
+
+    assert result == {"is_recommended": False, "reason": "from-list"}
+
+
+def test_parse_ai_response_json_unwraps_nested_list_payload():
+    content = '[[{"is_recommended": false, "reason": "nested-list"}]]'
+
+    result = parse_ai_response_json(content)
+
+    assert result == {"is_recommended": False, "reason": "nested-list"}
+
+
+def test_parse_ai_response_json_repairs_truncated_object():
+    content = '{"is_recommended": false, "reason": "截断了", "risk_tags": ["矿卡"'
+
+    result = parse_ai_response_json(content)
+
+    assert result["is_recommended"] is False
+    assert result["reason"] == "截断了"
+    assert result["risk_tags"] == ["矿卡"]
+
+
 def test_extract_ai_response_content_with_none_content_but_valid_reasoning_content():
     """当 content 为 None 但 reasoning_content 有值时，应该成功提取 reasoning_content 的内容"""
     # 创建 mock 对象模拟 OpenAI 风格的响应

@@ -10,6 +10,7 @@ interface TrendPoint {
 
 const props = defineProps<{
   points: TrendPoint[]
+  soldPoints?: TrendPoint[]
 }>()
 const { t } = useI18n()
 
@@ -20,10 +21,22 @@ const padding = 24
 const validPoints = computed(() =>
   props.points.filter((point) => point.avg_price !== null && point.avg_price !== undefined)
 )
+const soldByDay = computed(() => {
+  const map = new Map<string, number>()
+  for (const point of props.soldPoints || []) {
+    if (typeof point.avg_price === 'number') {
+      map.set(point.day, point.avg_price)
+    }
+  }
+  return map
+})
+const soldValues = computed(() =>
+  validPoints.value.map((point) => soldByDay.value.get(point.day) ?? null)
+)
 
 const valueRange = computed(() => {
   const values = validPoints.value
-    .flatMap((point) => [point.avg_price, point.median_price])
+    .flatMap((point) => [point.avg_price, point.median_price, soldByDay.value.get(point.day)])
     .filter((value): value is number => typeof value === 'number')
   if (values.length === 0) {
     return { min: 0, max: 1 }
@@ -49,18 +62,19 @@ function resolveY(value: number) {
 }
 
 function buildPath(values: Array<number | null>) {
-  const commands = values
-    .map((value, index) => {
-      if (value === null || value === undefined) return null
-      const prefix = index === 0 ? 'M' : 'L'
-      return `${prefix} ${resolveX(index)} ${resolveY(value)}`
-    })
-    .filter(Boolean)
+  const commands: string[] = []
+  let started = false
+  values.forEach((value, index) => {
+    if (value === null || value === undefined) return
+    commands.push(`${started ? 'L' : 'M'} ${resolveX(index)} ${resolveY(value)}`)
+    started = true
+  })
   return commands.join(' ')
 }
 
 const avgPath = computed(() => buildPath(validPoints.value.map((point) => point.avg_price)))
 const medianPath = computed(() => buildPath(validPoints.value.map((point) => point.median_price)))
+const soldPath = computed(() => buildPath(soldValues.value))
 const areaPath = computed(() => {
   if (!avgPath.value || validPoints.value.length === 0) return ''
   const firstX = resolveX(0)
@@ -82,6 +96,10 @@ const areaPath = computed(() => {
         <span class="inline-flex items-center gap-1">
           <span class="h-2.5 w-2.5 rounded-full bg-amber-500" />
           {{ t('results.chart.medianPrice') }}
+        </span>
+        <span class="inline-flex items-center gap-1">
+          <span class="h-2.5 w-2.5 rounded-full bg-emerald-600" />
+          {{ t('results.chart.soldAvg') }}
         </span>
       </div>
     </div>
@@ -115,10 +133,18 @@ const areaPath = computed(() => {
         <path :d="areaPath" fill="url(#avg-area-fill)" />
         <path :d="avgPath" fill="none" stroke="#0284c7" stroke-width="4" stroke-linecap="round" />
         <path :d="medianPath" fill="none" stroke="#f59e0b" stroke-width="3" stroke-dasharray="8 6" stroke-linecap="round" />
+        <path :d="soldPath" fill="none" stroke="#059669" stroke-width="3" stroke-linecap="round" />
 
         <g v-for="(point, index) in validPoints" :key="point.day">
           <circle :cx="resolveX(index)" :cy="resolveY(point.avg_price as number)" r="5" fill="#0284c7" />
           <circle :cx="resolveX(index)" :cy="resolveY(point.median_price as number)" r="4" fill="#f59e0b" />
+          <circle
+            v-if="soldValues[index] !== null"
+            :cx="resolveX(index)"
+            :cy="resolveY(soldValues[index] as number)"
+            r="4"
+            fill="#059669"
+          />
           <text
             :x="resolveX(index)"
             :y="chartHeight - 6"

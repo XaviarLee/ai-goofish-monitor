@@ -202,6 +202,105 @@ def delete_price_snapshots(keyword: str) -> int:
     return int(cursor.rowcount or 0)
 
 
+def record_sold_deal(
+    *,
+    keyword: str,
+    task_name: str,
+    item_id: str,
+    title: str = "",
+    sold_price: float,
+    sold_price_display: str = "",
+    last_listing_price: Optional[float] = None,
+    detected_at: Optional[str] = None,
+    source: str = "seller_list",
+    seller: str = "",
+    seller_id: str = "",
+    link: str = "",
+) -> bool:
+    """同一关键词下每个商品只记一笔成交。"""
+    item_key = str(item_id or "").strip()
+    price_value = parse_price_value(sold_price)
+    if not item_key or price_value is None:
+        return False
+
+    detected_at = _safe_iso_datetime(detected_at)
+    bootstrap_sqlite_storage()
+    with sqlite_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO sold_deals (
+                keyword_slug, keyword, task_name, item_id, title, sold_price,
+                sold_price_display, last_listing_price, detected_at, source,
+                seller, seller_id, link
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                normalize_keyword_slug(keyword),
+                keyword,
+                task_name,
+                item_key,
+                title,
+                price_value,
+                sold_price_display or str(price_value),
+                parse_price_value(last_listing_price),
+                detected_at,
+                source,
+                seller,
+                seller_id,
+                link,
+            ),
+        )
+        conn.commit()
+    return int(cursor.rowcount or 0) > 0
+
+
+def load_sold_deals(keyword: str) -> list[dict]:
+    bootstrap_sqlite_storage()
+    with sqlite_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM sold_deals
+            WHERE keyword_slug = ?
+            ORDER BY detected_at ASC, id ASC
+            """,
+            (normalize_keyword_slug(keyword),),
+        ).fetchall()
+    deals: list[dict] = []
+    for row in rows:
+        deals.append(
+            {
+                "detected_at": row["detected_at"],
+                "snapshot_time": row["detected_at"],
+                "snapshot_day": str(row["detected_at"] or "")[:10],
+                "task_name": row["task_name"],
+                "keyword": row["keyword"],
+                "item_id": row["item_id"],
+                "title": row["title"],
+                "price": row["sold_price"],
+                "sold_price": row["sold_price"],
+                "sold_price_display": row["sold_price_display"],
+                "last_listing_price": row["last_listing_price"],
+                "source": row["source"],
+                "seller": row["seller"],
+                "seller_id": row["seller_id"],
+                "link": row["link"],
+            }
+        )
+    return deals
+
+
+def delete_sold_deals(keyword: str) -> int:
+    bootstrap_sqlite_storage()
+    with sqlite_connection() as conn:
+        cursor = conn.execute(
+            "DELETE FROM sold_deals WHERE keyword_slug = ?",
+            (normalize_keyword_slug(keyword),),
+        )
+        conn.commit()
+    return int(cursor.rowcount or 0)
+
+
 def _dedupe_latest(records: Iterable[dict], group_key: str) -> list[dict]:
     latest_by_key: dict[str, dict] = {}
     for record in records:
@@ -353,10 +452,17 @@ def build_market_reference(
         item_id=str(item.get("商品ID") or ""),
         current_price=parse_price_value(item.get("当前售价")),
     )
+    sold_deals = load_sold_deals(keyword)
+    sold_summary = _summarize_prices(sold_deals)
     return {
         "当前搜索样本": market_snapshot,
         "历史价格概览": history_summary,
         "本商品价格位置": item_context,
+        "近期成交概览": {
+            "unique_items": len(sold_deals),
+            **sold_summary,
+            "latest_sold_at": sold_deals[-1]["detected_at"] if sold_deals else None,
+        },
         "关键词": keyword,
     }
 
@@ -374,12 +480,25 @@ def build_price_history_insights(
             for snapshot in snapshots
             if str(snapshot.get("item_id") or "") in visible_item_ids
         ]
+    sold_deals = load_sold_deals(keyword)
+
+    empty_sold = {
+        "unique_items": 0,
+        **_summarize_prices([]),
+        "latest_sold_at": None,
+    }
     if not snapshots:
         return {
             "market_summary": _summarize_prices([]),
             "history_summary": {"unique_items": 0, **_summarize_prices([])},
             "daily_trend": [],
             "latest_snapshot_at": None,
+            "sold_summary": {
+                "unique_items": len(sold_deals),
+                **_summarize_prices(sold_deals),
+                "latest_sold_at": sold_deals[-1]["detected_at"] if sold_deals else None,
+            } if sold_deals else empty_sold,
+            "sold_daily_trend": _build_sold_daily_trend(sold_deals),
         }
 
     recent_snapshots = _recent_window_snapshots(snapshots, window_days)
@@ -389,6 +508,7 @@ def build_price_history_insights(
         "item_id",
     )
     latest_records_by_item = _dedupe_latest(recent_snapshots, "item_id")
+    recent_sold = _recent_window_snapshots(sold_deals, window_days)
 
     return {
         "market_summary": {
@@ -401,4 +521,24 @@ def build_price_history_insights(
         },
         "daily_trend": _build_daily_trend(recent_snapshots),
         "latest_snapshot_at": snapshots[-1].get("snapshot_time"),
+        "sold_summary": {
+            "unique_items": len(sold_deals),
+            **_summarize_prices(sold_deals),
+            "latest_sold_at": sold_deals[-1]["detected_at"] if sold_deals else None,
+        },
+        "sold_daily_trend": _build_sold_daily_trend(recent_sold),
     }
+
+
+def _build_sold_daily_trend(deals: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for deal in deals:
+        grouped[str(deal.get("snapshot_day") or "")].append(deal)
+    points: list[dict] = []
+    for day in sorted(grouped.keys()):
+        if not day:
+            continue
+        summary = _summarize_prices(grouped[day])
+        summary["day"] = day
+        points.append(summary)
+    return points

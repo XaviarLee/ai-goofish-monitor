@@ -181,6 +181,7 @@ class ItemStatus(str, Enum):
     ACTIVE = "active"
     HIDDEN = "hidden"
     EXPIRED = "expired"
+    SOLD = "sold"
 
 
 class UpdateStatusRequest(BaseModel):
@@ -193,7 +194,7 @@ class BlacklistRulesRequest(BaseModel):
 
 @router.patch("/{filename}/items/{item_id}/status")
 async def patch_item_status(filename: str, item_id: str, body: UpdateStatusRequest):
-    """更新指定商品的状态（active/hidden/expired）"""
+    """更新指定商品的状态（active/hidden/expired/sold）"""
     try:
         validate_result_filename(filename)
         updated = await update_item_status(filename, item_id, body.status.value)

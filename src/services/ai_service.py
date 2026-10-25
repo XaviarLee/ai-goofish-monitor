@@ -4,6 +4,10 @@ AI 分析服务
 """
 from typing import Dict, List, Optional
 from src.infrastructure.external.ai_client import AIClient
+from src.services.ai_analysis_schema import (
+    normalize_ai_analysis_result,
+    validate_ai_analysis_result,
+)
 
 
 class AIAnalysisService:
@@ -35,6 +39,7 @@ class AIAnalysisService:
 
         try:
             result = await self.ai_client.analyze(product_data, image_paths, prompt_text)
+            result = normalize_ai_analysis_result(result)
 
             if result and self._validate_result(result):
                 return result
@@ -47,32 +52,7 @@ class AIAnalysisService:
 
     def _validate_result(self, result: Dict) -> bool:
         """验证 AI 分析结果的格式"""
-        required_fields = [
-            "prompt_version",
-            "is_recommended",
-            "reason",
-            "risk_tags",
-            "criteria_analysis"
-        ]
-
-        # 检查必需字段
-        for field in required_fields:
-            if field not in result:
-                print(f"AI 响应缺少必需字段: {field}")
-                return False
-
-        # 检查数据类型
-        if not isinstance(result.get("is_recommended"), bool):
-            print("is_recommended 字段不是布尔类型")
-            return False
-
-        if not isinstance(result.get("risk_tags"), list):
-            print("risk_tags 字段不是列表类型")
-            return False
-
-        criteria_analysis = result.get("criteria_analysis", {})
-        if not isinstance(criteria_analysis, dict) or not criteria_analysis:
-            print("criteria_analysis 必须是非空字典")
-            return False
-
-        return True
+        if validate_ai_analysis_result(result):
+            return True
+        print("AI 响应缺少必需字段或字段类型不正确")
+        return False

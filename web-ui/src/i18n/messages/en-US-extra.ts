@@ -243,6 +243,12 @@ const enUSExtra = {
       urlLabel: 'WeCom Bot URL',
       configuredHint: 'Bot URL is already stored.',
     },
+    feishu: {
+      title: 'Feishu Bot',
+      description: 'The custom bot webhook contains a key, so it is hidden. If keyword security is enabled, include “闲鱼” in the keyword list.',
+      urlLabel: 'Feishu Bot URL',
+      configuredHint: 'Bot URL is already stored.',
+    },
     telegram: {
       description: 'The bot token is sensitive, while Chat ID and API base URL can be viewed and updated directly.',
       chatIdPlaceholder: 'Example: 123456789',

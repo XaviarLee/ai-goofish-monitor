@@ -33,6 +33,9 @@ UNSUPPORTED_TEMPERATURE_MARKERS = (
     "temperature",
     "sampling temperature",
 )
+THINKING_CONTROL_MODEL_MARKERS = (
+    "deepseek",
+)
 
 
 def build_responses_input(messages: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -72,6 +75,41 @@ def add_json_response_format(
     next_params = dict(request_params)
     if enabled:
         next_params["response_format"] = {"type": JSON_OUTPUT_TYPE}
+    return next_params
+
+
+def apply_thinking_mode(
+    request_params: Dict[str, Any],
+    enable_thinking: bool,
+) -> Dict[str, Any]:
+    """按模型兼容性开关思考/推理模式。
+
+    DeepSeek Flash 默认开启思考。官方 Chat Completions 关闭方式：
+    extra_body={"thinking": {"type": "disabled"}}，同时 reasoning_effort="none"
+    也会关闭思考。若不显式关闭，content 经常是空字符串、截断 JSON，或把
+    推理草稿解析成 list，而不是 EagleEye 需要的单个对象。
+    """
+    next_params = dict(request_params)
+    model = str(next_params.get("model") or "").lower()
+    is_thinking_control_model = any(
+        marker in model for marker in THINKING_CONTROL_MODEL_MARKERS
+    )
+    if not (enable_thinking or is_thinking_control_model):
+        return next_params
+
+    thinking_type = "enabled" if enable_thinking else "disabled"
+    extra_body = dict(next_params.get("extra_body") or {})
+    extra_body["thinking"] = {"type": thinking_type}
+    next_params["extra_body"] = extra_body
+
+    # DeepSeek Chat Completions: reasoning_effort=none 关闭思考。
+    # Responses API: reasoning.effort=none 关闭思考。
+    if is_thinking_control_model:
+        next_params["reasoning_effort"] = "high" if enable_thinking else "none"
+        if "input" in next_params:
+            next_params["reasoning"] = {
+                "effort": "high" if enable_thinking else "none"
+            }
     return next_params
 
 

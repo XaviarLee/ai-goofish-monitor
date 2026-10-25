@@ -177,9 +177,11 @@ const enUS = {
     },
     insights: {
       defaultTitle: 'Price Trend Insight',
-      subtitle: 'Historical snapshots of the same keyword, including average price, short-term movement, and price band.',
+      subtitle: 'Historical snapshots of the same keyword. Current average uses active listing prices only; confirmed sold items keep a separate sold average and stay visible in the result list.',
       currentAvg: 'Current Avg',
       historyAvg: 'Historical Avg',
+      soldAvg: 'Sold Avg',
+      soldCount: '{count} sold',
       currentMin: 'Current Lowest',
       sampleCount: '{count} samples',
       uniqueItems: '{count} unique items',
@@ -196,6 +198,7 @@ const enUS = {
     chart: {
       avgPrice: 'Average',
       medianPrice: 'Median',
+      soldAvg: 'Sold Avg',
       noTrend: 'No trend data to render yet',
     },
     card: {
@@ -213,6 +216,7 @@ const enUS = {
       hidden: 'Hidden',
       blacklisted: 'Rule Hidden',
       expired: 'Expired',
+      sold: 'Sold',
       block: 'Block',
       unblock: 'Unblock',
     },

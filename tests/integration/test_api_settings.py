@@ -27,6 +27,7 @@ _SETTINGS_ENV_KEYS = [
     "GOTIFY_TOKEN",
     "BARK_URL",
     "WX_BOT_URL",
+    "FEISHU_BOT_URL",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
     "TELEGRAM_API_BASE_URL",
@@ -118,6 +119,7 @@ def test_notification_settings_redact_sensitive_values_and_expose_flags(tmp_path
                 "GOTIFY_TOKEN=secret-token",
                 "BARK_URL=https://api.day.app/private-key/",
                 "WX_BOT_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret",
+                "FEISHU_BOT_URL=https://open.feishu.cn/open-apis/bot/v2/hook/secret",
                 "TELEGRAM_BOT_TOKEN=telegram-secret",
                 "TELEGRAM_CHAT_ID=123456",
                 "TELEGRAM_API_BASE_URL=https://tg.example.com/proxy",
@@ -141,12 +143,14 @@ def test_notification_settings_redact_sensitive_values_and_expose_flags(tmp_path
     assert payload["TELEGRAM_API_BASE_URL"] == "https://tg.example.com/proxy"
     assert payload["BARK_URL"] == ""
     assert payload["WX_BOT_URL"] == ""
+    assert payload["FEISHU_BOT_URL"] == ""
     assert payload["GOTIFY_TOKEN"] == ""
     assert payload["TELEGRAM_BOT_TOKEN"] == ""
     assert payload["WEBHOOK_URL"] == ""
     assert payload["WEBHOOK_HEADERS"] == ""
     assert payload["BARK_URL_SET"] is True
     assert payload["WX_BOT_URL_SET"] is True
+    assert payload["FEISHU_BOT_URL_SET"] is True
     assert payload["GOTIFY_TOKEN_SET"] is True
     assert payload["TELEGRAM_BOT_TOKEN_SET"] is True
     assert payload["WEBHOOK_URL_SET"] is True
@@ -199,6 +203,7 @@ def test_system_status_includes_notification_channel_flags(tmp_path, monkeypatch
                 "GOTIFY_TOKEN=secret-token",
                 "BARK_URL=https://api.day.app/private-key/",
                 "WX_BOT_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret",
+                "FEISHU_BOT_URL=https://open.feishu.cn/open-apis/bot/v2/hook/secret",
                 "TELEGRAM_BOT_TOKEN=telegram-secret",
                 "TELEGRAM_CHAT_ID=123456",
                 "WEBHOOK_URL=https://hooks.example.com/notify",
@@ -218,6 +223,7 @@ def test_system_status_includes_notification_channel_flags(tmp_path, monkeypatch
     assert env_payload["gotify_token_set"] is True
     assert env_payload["bark_url_set"] is True
     assert env_payload["wx_bot_url_set"] is True
+    assert env_payload["feishu_bot_url_set"] is True
     assert env_payload["telegram_bot_token_set"] is True
     assert env_payload["telegram_chat_id_set"] is True
     assert env_payload["webhook_url_set"] is True

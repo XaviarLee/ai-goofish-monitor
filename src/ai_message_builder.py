@@ -19,6 +19,8 @@ def build_analysis_text_prompt(
     value_note = (
         "\n如果商品 JSON 中包含“价格参考”或 price_insight，请结合价格位置、历史走势、"
         "配置、成色、附件、卖家信息综合判断性价比。"
+        "“近期成交概览”是已确认成交价，不要和当前搜索挂牌均价混用；"
+        "挂牌均价反映在售要价，成交概览反映近期实际成交。"
         "你可以额外输出可选字段 value_score(0-100) 和 value_summary，"
         "但必须保留原有 is_recommended/reason 等字段。\n"
     )

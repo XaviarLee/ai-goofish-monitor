@@ -177,9 +177,11 @@ const zhCN = {
     },
     insights: {
       defaultTitle: '价格走势洞察',
-      subtitle: '用历史快照回看同关键词市场，当前均价、近期波动和价格带都集中在这里。',
+      subtitle: '用历史快照回看同关键词市场。当前均价只统计仍在售的挂牌价；已成交商品会单独记成交均价，并继续出现在结果列表里。',
       currentAvg: '当前样本均价',
       historyAvg: '历史均价',
+      soldAvg: '成交均价',
+      soldCount: '成交 {count} 件',
       currentMin: '当前最低价',
       sampleCount: '样本 {count} 条',
       uniqueItems: '唯一商品 {count} 个',
@@ -196,6 +198,7 @@ const zhCN = {
     chart: {
       avgPrice: '均价',
       medianPrice: '中位数',
+      soldAvg: '成交均价',
       noTrend: '暂无可绘制的趋势数据',
     },
     card: {
@@ -213,6 +216,7 @@ const zhCN = {
       hidden: '已屏蔽',
       blacklisted: '规则屏蔽',
       expired: '已过期',
+      sold: '已成交',
       block: '屏蔽',
       unblock: '取消屏蔽',
     },

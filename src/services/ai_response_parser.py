@@ -48,9 +48,10 @@ def parse_ai_response_json(content: str) -> dict:
     """解析 AI 文本响应中的 JSON。"""
     cleaned = _strip_code_fences(content)
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        return _extract_first_json_value(cleaned, exc)
+        parsed = _extract_first_json_value(cleaned, exc)
+    return _unwrap_analysis_payload(parsed)
 
 
 def _coerce_content_parts(content: Any) -> str:
@@ -97,6 +98,74 @@ def _strip_code_fences(content: str) -> str:
     return cleaned.strip()
 
 
+def _unwrap_analysis_payload(parsed: Any) -> dict:
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(parsed, list):
+        unwrapped = _unwrap_analysis_list(parsed)
+        if unwrapped is not None:
+            return unwrapped
+    raise ValueError(f"AI响应不是 JSON 对象: {type(parsed).__name__}")
+
+
+def _unwrap_analysis_list(parsed: list) -> dict | None:
+    preferred = None
+    fallback = None
+    for item in parsed:
+        if isinstance(item, list):
+            nested = _unwrap_analysis_list(item)
+            if nested is not None:
+                return nested
+            continue
+        if not isinstance(item, dict):
+            continue
+        if preferred is None and (
+            "is_recommended" in item or "criteria_analysis" in item or "reason" in item
+        ):
+            preferred = item
+        elif fallback is None:
+            fallback = item
+    return preferred or fallback
+
+
+def _repair_truncated_json(content: str) -> str | None:
+    start = content.find("{")
+    if start < 0:
+        return None
+    snippet = content[start:]
+    in_string = False
+    escaped = False
+    quote = ""
+    stack: list[str] = []
+    for char in snippet:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                in_string = False
+            continue
+        if char in {'"', "'"}:
+            in_string = True
+            quote = char
+            continue
+        if char in "{[":
+            stack.append("}" if char == "{" else "]")
+        elif char in "}]":
+            if stack and stack[-1] == char:
+                stack.pop()
+    if in_string:
+        snippet += quote
+    snippet = snippet.rstrip().rstrip(",")
+    snippet += "".join(reversed(stack))
+    try:
+        json.loads(snippet)
+    except json.JSONDecodeError:
+        return None
+    return snippet
+
+
 def _extract_first_json_value(
     content: str,
     fallback_error: json.JSONDecodeError,
@@ -112,6 +181,10 @@ def _extract_first_json_value(
             return parsed
         except json.JSONDecodeError as exc:
             last_error = exc
+
+    repaired = _repair_truncated_json(content)
+    if repaired is not None:
+        return json.loads(repaired)
 
     if last_error is not None:
         raise last_error
